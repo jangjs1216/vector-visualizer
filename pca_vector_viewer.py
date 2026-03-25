@@ -308,10 +308,14 @@ class PCAVectorViewer:
         # Keys: n_dim (2 or 3) -> np.ndarray of shape (len(df), n_dim)
         self._umap_cache: dict[int, np.ndarray] = {}
 
+        # Click mode: "viewer" or "distance"
+        self._click_mode_var = tk.StringVar(value="viewer")
+
         # Distance measurement state
         self._selected_points: list[pd.Series] = []  # up to 2 selected rows
         self._selected_markers: list = []  # matplotlib marker artists
-        self._distance_var = tk.StringVar(value="Shift+Click으로 두 점을 선택하세요")
+        self._distance_line = None  # dashed line artist
+        self._distance_var = tk.StringVar(value="두 점을 클릭하여 거리를 측정하세요")
 
         self._build_ui()
         self._bind_filter_events()
@@ -390,6 +394,21 @@ class PCAVectorViewer:
         ttk.Label(search_box, text="Only show rows where path contains this text.",
                   wraplength=320, justify="left").pack(anchor="w", pady=(6, 0))
 
+        # ── Click Mode ──
+        mode_box = ttk.LabelFrame(control_frame, text="🖱 Click Mode", padding=8)
+        mode_box.pack(fill=tk.X, pady=(0, 10))
+        ttk.Radiobutton(mode_box, text="🖼 Image Viewer", value="viewer",
+                        variable=self._click_mode_var,
+                        command=self._on_mode_change).pack(anchor="w")
+        ttk.Radiobutton(mode_box, text="📏 Distance Measurement", value="distance",
+                        variable=self._click_mode_var,
+                        command=self._on_mode_change).pack(anchor="w")
+        self._mode_hint_label = ttk.Label(
+            mode_box, text="클릭하면 이미지를 엽니다.",
+            wraplength=320, justify="left", foreground="gray"
+        )
+        self._mode_hint_label.pack(anchor="w", pady=(6, 0))
+
         # ── Buttons ──
         btn_box = ttk.Frame(control_frame)
         btn_box.pack(fill=tk.X, pady=(0, 10))
@@ -417,14 +436,14 @@ class PCAVectorViewer:
         for v in self.color_values:
             ttk.Checkbutton(color_box, text=v, variable=self.color_vars[v]).pack(anchor="w")
 
-        # ── Distance Measurement ──
-        dist_box = ttk.LabelFrame(control_frame, text="📏 Distance Measurement", padding=8)
-        dist_box.pack(fill=tk.X, pady=(0, 10))
-        ttk.Label(dist_box, text="Shift+Click으로 두 점을 선택하면\n코사인 거리를 계산합니다.",
-                  wraplength=320, justify="left", foreground="gray").pack(anchor="w", pady=(0, 6))
-        ttk.Label(dist_box, textvariable=self._distance_var, wraplength=340,
+        # ── Distance Result Panel ──
+        self._dist_frame = ttk.LabelFrame(control_frame, text="📏 Distance Result", padding=8)
+        self._dist_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(self._dist_frame, textvariable=self._distance_var, wraplength=340,
                   justify="left", font=("Consolas", 9)).pack(fill=tk.X, pady=(0, 4))
-        ttk.Button(dist_box, text="Clear Selection", command=self._clear_distance_selection).pack(fill=tk.X)
+        ttk.Button(self._dist_frame, text="Clear Selection", command=self._clear_distance_selection).pack(fill=tk.X)
+        # Initially hidden (viewer mode)
+        self._dist_frame.pack_forget()
 
         # ── Status ──
         status_frame = ttk.LabelFrame(control_frame, text="Current View", padding=8)
@@ -560,27 +579,33 @@ class PCAVectorViewer:
         self._hide_annotation()
 
     def _on_click(self, event):
-        """Click on a point.
-        - Normal click → open image
-        - Shift+Click → select point for distance measurement
-        """
+        """Click on a point — behavior depends on current click mode."""
         if self.ax is None or event.inaxes != self.ax:
             return
 
-        # Check if Shift is held (guiEvent may be None in some backends)
-        shift_held = False
-        if hasattr(event, 'guiEvent') and event.guiEvent is not None:
-            shift_held = bool(event.guiEvent.state & 0x1)  # Shift mask
+        mode = self._click_mode_var.get()
 
         for scatter, gdf, _ in self.scatter_lookup:
             ok, info = scatter.contains(event)
             if ok and info.get("ind", []):
                 row = gdf.iloc[int(info["ind"][0])]
-                if shift_held:
+                if mode == "distance":
                     self._select_point_for_distance(row, event)
                 else:
                     self._open_image(row)
                 return
+
+    def _on_mode_change(self) -> None:
+        """Called when click mode radio button changes."""
+        mode = self._click_mode_var.get()
+        if mode == "viewer":
+            self._mode_hint_label.config(text="클릭하면 이미지를 엽니다.")
+            self._dist_frame.pack_forget()
+            self._clear_distance_selection()
+        else:
+            self._mode_hint_label.config(text="두 점을 순서대로 클릭하면\n코사인 거리를 계산합니다.")
+            # Show distance panel (insert before Status)
+            self._dist_frame.pack(fill=tk.X, pady=(0, 10))
 
     def _open_image(self, row) -> None:
         """Open an image file in a new window with metadata."""
@@ -724,7 +749,7 @@ class PCAVectorViewer:
                 pass
         self._selected_markers.clear()
         self._selected_points.clear()
-        self._distance_var.set("Shift+Click으로 두 점을 선택하세요")
+        self._distance_var.set("두 점을 클릭하여 거리를 측정하세요")
         if self.canvas:
             self.canvas.draw()
 
@@ -740,7 +765,7 @@ class PCAVectorViewer:
         # Clear distance selection on redraw
         self._selected_points.clear()
         self._selected_markers.clear()
-        self._distance_var.set("Shift+Click으로 두 점을 선택하세요")
+        self._distance_var.set("두 점을 클릭하여 거리를 측정하세요")
 
         method = self.method_var.get()
 
