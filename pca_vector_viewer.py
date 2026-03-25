@@ -32,6 +32,7 @@ import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+from scipy.spatial.distance import cosine as cosine_distance
 
 try:
     from PIL import Image, ImageTk
@@ -307,6 +308,11 @@ class PCAVectorViewer:
         # Keys: n_dim (2 or 3) -> np.ndarray of shape (len(df), n_dim)
         self._umap_cache: dict[int, np.ndarray] = {}
 
+        # Distance measurement state
+        self._selected_points: list[pd.Series] = []  # up to 2 selected rows
+        self._selected_markers: list = []  # matplotlib marker artists
+        self._distance_var = tk.StringVar(value="Shift+Click으로 두 점을 선택하세요")
+
         self._build_ui()
         self._bind_filter_events()
         # Defer first draw
@@ -410,6 +416,15 @@ class PCAVectorViewer:
         color_box.pack(fill=tk.X, pady=(0, 10))
         for v in self.color_values:
             ttk.Checkbutton(color_box, text=v, variable=self.color_vars[v]).pack(anchor="w")
+
+        # ── Distance Measurement ──
+        dist_box = ttk.LabelFrame(control_frame, text="📏 Distance Measurement", padding=8)
+        dist_box.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(dist_box, text="Shift+Click으로 두 점을 선택하면\n코사인 거리를 계산합니다.",
+                  wraplength=320, justify="left", foreground="gray").pack(anchor="w", pady=(0, 6))
+        ttk.Label(dist_box, textvariable=self._distance_var, wraplength=340,
+                  justify="left", font=("Consolas", 9)).pack(fill=tk.X, pady=(0, 4))
+        ttk.Button(dist_box, text="Clear Selection", command=self._clear_distance_selection).pack(fill=tk.X)
 
         # ── Status ──
         status_frame = ttk.LabelFrame(control_frame, text="Current View", padding=8)
@@ -545,14 +560,26 @@ class PCAVectorViewer:
         self._hide_annotation()
 
     def _on_click(self, event):
-        """Click on a point → open the image at its path."""
+        """Click on a point.
+        - Normal click → open image
+        - Shift+Click → select point for distance measurement
+        """
         if self.ax is None or event.inaxes != self.ax:
             return
+
+        # Check if Shift is held (guiEvent may be None in some backends)
+        shift_held = False
+        if hasattr(event, 'guiEvent') and event.guiEvent is not None:
+            shift_held = bool(event.guiEvent.state & 0x1)  # Shift mask
+
         for scatter, gdf, _ in self.scatter_lookup:
             ok, info = scatter.contains(event)
             if ok and info.get("ind", []):
                 row = gdf.iloc[int(info["ind"][0])]
-                self._open_image(row)
+                if shift_held:
+                    self._select_point_for_distance(row, event)
+                else:
+                    self._open_image(row)
                 return
 
     def _open_image(self, row) -> None:
@@ -600,6 +627,107 @@ class PCAVectorViewer:
         tk.Label(win, text=meta_text, font=("Consolas", 9), fg="#444444",
                  justify="left", anchor="w").pack(fill=tk.X, padx=10, pady=(0, 8))
 
+    # ── Distance measurement ─────────────────────────────────
+
+    def _select_point_for_distance(self, row: pd.Series, event) -> None:
+        """Select a point for cosine distance measurement (Shift+Click)."""
+        if len(self._selected_points) >= 2:
+            # Reset: start new selection
+            self._clear_distance_selection()
+
+        self._selected_points.append(row)
+        is_3d = self.dimension_var.get() == "3D"
+
+        # Draw a red marker on the selected point
+        if "C1" in row.index and "C2" in row.index:
+            if is_3d and "C3" in row.index:
+                marker = self.ax.scatter(
+                    [row["C1"]], [row["C2"]], [row["C3"]],
+                    s=200, c="red", marker="*", zorder=10,
+                    edgecolors="darkred", linewidths=1.5,
+                )
+            else:
+                marker = self.ax.scatter(
+                    [row["C1"]], [row["C2"]],
+                    s=200, c="red", marker="*", zorder=10,
+                    edgecolors="darkred", linewidths=1.5,
+                )
+            self._selected_markers.append(marker)
+            self.canvas.draw()
+
+        n = len(self._selected_points)
+        if n == 1:
+            self._distance_var.set(
+                f"Point A 선택됨\n"
+                f"  type: {row['type']}\n"
+                f"  side: {row['side']}\n"
+                f"  color: {row['color']}\n"
+                f"  path: {os.path.basename(str(row['path']))}\n\n"
+                f"→ Shift+Click으로 Point B를 선택하세요"
+            )
+        elif n == 2:
+            self._compute_and_show_distance()
+
+    def _compute_and_show_distance(self) -> None:
+        """Compute cosine distance between two selected points using original vectors."""
+        row_a = self._selected_points[0]
+        row_b = self._selected_points[1]
+
+        vec_a = row_a[self.vector_columns].to_numpy(dtype=np.float64)
+        vec_b = row_b[self.vector_columns].to_numpy(dtype=np.float64)
+
+        # Cosine distance (1 - cosine_similarity), range [0, 2]
+        cos_dist = cosine_distance(vec_a, vec_b)
+        cos_sim = 1.0 - cos_dist
+
+        # Euclidean distance
+        euc_dist = np.linalg.norm(vec_a - vec_b)
+
+        # Draw line between the two points
+        is_3d = self.dimension_var.get() == "3D"
+        if "C1" in row_a.index and "C1" in row_b.index:
+            xs = [row_a["C1"], row_b["C1"]]
+            ys = [row_a["C2"], row_b["C2"]]
+            if is_3d and "C3" in row_a.index:
+                zs = [row_a["C3"], row_b["C3"]]
+                self.ax.plot(xs, ys, zs, color="red", linewidth=1.5,
+                             linestyle="--", alpha=0.7, zorder=9)
+            else:
+                self.ax.plot(xs, ys, color="red", linewidth=1.5,
+                             linestyle="--", alpha=0.7, zorder=9)
+            self.canvas.draw()
+
+        self._distance_var.set(
+            f"═══ Distance Result ═══\n"
+            f"\n"
+            f"Cosine Distance : {cos_dist:.6f}\n"
+            f"Cosine Similarity: {cos_sim:.6f}\n"
+            f"Euclidean Distance: {euc_dist:.4f}\n"
+            f"\n"
+            f"── Point A ──\n"
+            f"  type: {row_a['type']}\n"
+            f"  side: {row_a['side']}, color: {row_a['color']}\n"
+            f"  {os.path.basename(str(row_a['path']))}\n"
+            f"\n"
+            f"── Point B ──\n"
+            f"  type: {row_b['type']}\n"
+            f"  side: {row_b['side']}, color: {row_b['color']}\n"
+            f"  {os.path.basename(str(row_b['path']))}"
+        )
+
+    def _clear_distance_selection(self) -> None:
+        """Clear selected points and remove markers."""
+        for marker in self._selected_markers:
+            try:
+                marker.remove()
+            except Exception:
+                pass
+        self._selected_markers.clear()
+        self._selected_points.clear()
+        self._distance_var.set("Shift+Click으로 두 점을 선택하세요")
+        if self.canvas:
+            self.canvas.draw()
+
     # ── Redraw (core method) ─────────────────────────────────
 
     def redraw(self) -> None:
@@ -609,6 +737,11 @@ class PCAVectorViewer:
         - UMAP: computes on ALL data once, caches the result,
           then subsequent filter changes just use the cache.
         """
+        # Clear distance selection on redraw
+        self._selected_points.clear()
+        self._selected_markers.clear()
+        self._distance_var.set("Shift+Click으로 두 점을 선택하세요")
+
         method = self.method_var.get()
 
         if method == "UMAP":
