@@ -2298,11 +2298,15 @@ class VectorDistanceSimulator:
         mother_props /= max(mother_props.sum(), 1.0)
         quotas = allocate_quotas(mother_props, capacity)
 
-        parsed = pd.to_datetime(pd.Series(dates), errors="coerce")
+        parsed = pd.to_datetime(pd.Series(dates, dtype=str), format="%y%m%d", errors="coerce")
         if parsed.notna().all():
             date_values = {date: parsed.iloc[i].normalize() for i, date in enumerate(dates)}
         else:
-            date_values = {date: i for i, date in enumerate(dates)}
+            fallback = pd.to_datetime(pd.Series(dates, dtype=str), errors="coerce")
+            if fallback.notna().all():
+                date_values = {date: fallback.iloc[i].normalize() for i, date in enumerate(dates)}
+            else:
+                date_values = {date: i for i, date in enumerate(dates)}
 
         date_positions = {}
         side_values = color_df["side"].astype(str).to_numpy()
