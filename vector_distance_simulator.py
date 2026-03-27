@@ -496,9 +496,13 @@ def allocate_quotas(weights: np.ndarray, total: int) -> np.ndarray:
     return quotas
 
 
-def mean_nearest_neighbor_distance(normalized_vectors: np.ndarray) -> float:
-    if len(normalized_vectors) < 2:
+def mean_nearest_neighbor_distance(normalized_vectors: np.ndarray, max_samples: int | None = None) -> float:
+    n = len(normalized_vectors)
+    if n < 2:
         return 0.0
+    if max_samples is not None and n > max_samples:
+        idx = np.linspace(0, n - 1, max_samples, dtype=int)
+        normalized_vectors = normalized_vectors[idx]
     sims = normalized_vectors @ normalized_vectors.T
     np.fill_diagonal(sims, -np.inf)
     nn_sims = np.max(sims, axis=1)
@@ -2539,7 +2543,7 @@ class VectorDistanceSimulator:
         avg_age_days = float(np.mean(ages)) if ages else 0.0
         freshness_score = max(0.0, 100.0 * (1.0 - avg_age_days / max(float(params["max_age_days"]), 1.0)))
         positions = [entry.pos for entry in buffer]
-        mean_nn_dist = mean_nearest_neighbor_distance(context["normalized"][positions])
+        mean_nn_dist = mean_nearest_neighbor_distance(context["normalized"][positions], max_samples=256)
         tracking_score = (
             0.55 * match_score
             + 0.20 * coverage_score
@@ -2553,42 +2557,6 @@ class VectorDistanceSimulator:
             "fill_ratio": float(fill_ratio),
             "avg_age_days": float(avg_age_days),
             "mean_nn_dist": float(mean_nn_dist),
-        }
-
-    def _ts_simulate_single_date(
-        self,
-        strategy_name: str,
-        date: str,
-        params: dict,
-        context: dict,
-    ) -> dict:
-        current_value = context["date_values"][date]
-        buffer: list[BufferEntry] = []
-        cluster_counts = np.zeros(context["region_count"], dtype=int)
-        positions = context["date_positions"].get(date, [])
-
-        for pos in positions:
-            accept = self._ts_should_accept_sample(strategy_name, pos, buffer, cluster_counts, context, params)
-            if not accept:
-                continue
-            entry = BufferEntry(
-                source_index=int(context["color_df"].index[pos]),
-                pos=int(pos),
-                date_key=date,
-                time_value=current_value,
-                region=int(context["cluster_labels"][pos]),
-            )
-            buffer.append(entry)
-            cluster_counts[entry.region] += 1
-            while len(buffer) > context["capacity"]:
-                evict_idx = self._ts_choose_eviction_candidate(strategy_name, buffer, cluster_counts, context, current_value)
-                evicted = buffer.pop(evict_idx)
-                cluster_counts[evicted.region] -= 1
-
-        metrics = self._ts_snapshot_metrics(buffer, cluster_counts, context, current_value, params)
-        return {
-            "buffer_indices": [entry.source_index for entry in buffer],
-            **metrics,
         }
 
     def _ts_simulate_strategy(
@@ -2650,7 +2618,11 @@ class VectorDistanceSimulator:
             added_count = len(buffer_set - prev_buffer_set)
             dropped_count = len(prev_buffer_set - buffer_set)
             metrics = self._ts_snapshot_metrics(buffer, cluster_counts, context, current_value, params)
-            daily_result = self._ts_simulate_single_date(strategy_name, date, params, context)
+            daily_entries = [entry for entry in buffer if entry.date_key == date]
+            daily_counts = np.zeros(context["region_count"], dtype=int)
+            for entry in daily_entries:
+                daily_counts[entry.region] += 1
+            daily_metrics = self._ts_snapshot_metrics(daily_entries, daily_counts, context, current_value, params)
             per_date[date] = {
                 "incoming": incoming_count,
                 "accepted": accepted_count,
@@ -2661,12 +2633,12 @@ class VectorDistanceSimulator:
                 "retained_count": retained_count,
                 "added_count": added_count,
                 "dropped_count": dropped_count,
-                "daily_buffer_indices": daily_result["buffer_indices"],
-                "daily_tracking_score": daily_result["tracking_score"],
-                "daily_match_score": daily_result["match_score"],
-                "daily_coverage_score": daily_result["coverage_score"],
-                "daily_avg_age_days": daily_result["avg_age_days"],
-                "daily_mean_nn_dist": daily_result["mean_nn_dist"],
+                "daily_buffer_indices": [entry.source_index for entry in daily_entries],
+                "daily_tracking_score": daily_metrics["tracking_score"],
+                "daily_match_score": daily_metrics["match_score"],
+                "daily_coverage_score": daily_metrics["coverage_score"],
+                "daily_avg_age_days": daily_metrics["avg_age_days"],
+                "daily_mean_nn_dist": daily_metrics["mean_nn_dist"],
                 **metrics,
             }
             prev_buffer_set = buffer_set
