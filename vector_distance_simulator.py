@@ -1075,11 +1075,21 @@ class VectorDistanceSimulator:
 
     def _on_click_right(self, event):
         """Click on a simulation view point to open image preview."""
+        print(f"[DEBUG-R] _on_click_right: button={event.button}, inaxes={event.inaxes}, right_ax={self.right_ax}")
+        print(f"[DEBUG-R] right_scatter_lookup len={len(self.right_scatter_lookup)}")
         if self.right_ax is None or event.inaxes is None:
+            print("[DEBUG-R] early return: right_ax or inaxes is None")
             return
+        for i, (scatter, gdf, is_3d) in enumerate(self.right_scatter_lookup):
+            ok, info = scatter.contains(event)
+            ind = info.get("ind", [])
+            print(f"[DEBUG-R] scatter[{i}] contains={ok}, ind_len={len(ind)}, gdf_len={len(gdf)}")
         row, _ = self._find_closest_point(event, self.right_scatter_lookup)
         if row is not None:
+            print(f"[DEBUG-R] opening image: {row.get('path', 'NO_PATH')}")
             self._open_image(row)
+        else:
+            print("[DEBUG-R] no point found")
 
     def _open_image(self, row) -> None:
         """Open/update a reusable image preview window."""
