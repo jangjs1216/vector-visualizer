@@ -1004,36 +1004,54 @@ class VectorDistanceSimulator:
         if self._tooltip is not None:
             self._tooltip.withdraw()
 
+    def _find_closest_point(self, event):
+        """Find the closest scatter point to the mouse event across all scatter lookups.
+        Returns (row, gdf) or (None, None)."""
+        if self.left_ax is None or event.inaxes is None:
+            return None, None
+
+        best_row = None
+        best_dist = float("inf")
+
+        for scatter, gdf, is_3d in self.left_scatter_lookup:
+            ok, info = scatter.contains(event)
+            ind = info.get("ind", [])
+            if not ok or len(ind) == 0:
+                continue
+            # Pick the closest among matched indices
+            for idx in ind:
+                row = gdf.iloc[int(idx)]
+                # Compute pixel distance to find truly closest
+                try:
+                    px, py = scatter.axes.transData.transform((float(row["C1"]), float(row["C2"])))
+                    dx = px - event.x
+                    dy = py - event.y
+                    dist = dx * dx + dy * dy
+                except Exception:
+                    dist = 0.0
+                if dist < best_dist:
+                    best_dist = dist
+                    best_row = row
+
+        return best_row, best_dist
+
     def _on_hover_left(self, event):
         if self.left_ax is None or event.inaxes != self.left_ax:
             self._hide_annotation()
             return
-        for scatter, gdf, _ in self.left_scatter_lookup:
-            ok, info = scatter.contains(event)
-            if ok and info.get("ind", []):
-                self._show_annotation(gdf.iloc[int(info["ind"][0])], event)
-                return
-        self._hide_annotation()
+        row, _ = self._find_closest_point(event)
+        if row is not None:
+            self._show_annotation(row, event)
+        else:
+            self._hide_annotation()
 
     def _on_click_left(self, event):
         """Click on a point to open image preview."""
-        print(f"[DEBUG] _on_click_left called: button={event.button}, inaxes={event.inaxes}, left_ax={self.left_ax}")
-        print(f"[DEBUG] scatter_lookup len={len(self.left_scatter_lookup)}")
         if self.left_ax is None or event.inaxes is None:
-            print("[DEBUG] early return: left_ax or inaxes is None")
             return
-        if event.inaxes != self.left_ax:
-            print(f"[DEBUG] early return: inaxes mismatch {event.inaxes} != {self.left_ax}")
-            return
-        for i, (scatter, gdf, _) in enumerate(self.left_scatter_lookup):
-            ok, info = scatter.contains(event)
-            print(f"[DEBUG] scatter[{i}] contains={ok}, info={info}, gdf_len={len(gdf)}")
-            if ok and info.get("ind", []):
-                row = gdf.iloc[int(info["ind"][0])]
-                print(f"[DEBUG] opening image for: {row.get('path', 'NO_PATH')}")
-                self._open_image(row)
-                return
-        print("[DEBUG] no scatter hit")
+        row, _ = self._find_closest_point(event)
+        if row is not None:
+            self._open_image(row)
 
     def _open_image(self, row) -> None:
         """Open an image file in a new window with metadata."""
