@@ -450,7 +450,7 @@ TS_COMMON_PARAMS = {
     "buffer_size": {"label": "Buffer Size (N)", "default": 256, "min": 16, "max": 5000, "type": "int"},
     "max_age_days": {"label": "Max Age Days (K)", "default": 30, "min": 1, "max": 365, "type": "int"},
     "region_count": {"label": "Region Count", "default": 8, "min": 1, "max": 64, "type": "int"},
-    "distance_threshold": {"label": "Cosine Dist Threshold", "default": 0.08, "min": 0.0, "max": 2.0, "type": "float"},
+    "distance_threshold": {"label": "Cosine Dist Threshold", "default": 0.02, "min": 0.0, "max": 2.0, "type": "float"},
 }
 
 TS_METRIC_HELP = {
@@ -2305,6 +2305,15 @@ class VectorDistanceSimulator:
         sims = normalized[np.asarray(candidate_positions, dtype=int)] @ normalized[pos]
         return float(1.0 - np.max(sims))
 
+    def _ts_effective_distance_threshold(self, strategy_name: str, context: dict, params: dict) -> float:
+        base = float(params["distance_threshold"])
+        mother_nn = float(context.get("mother_mean_nn", 0.0))
+        if strategy_name == "Distance Gate FIFO":
+            adaptive = max(0.005, mother_nn * 0.35)
+        else:
+            adaptive = max(0.003, mother_nn * 0.20)
+        return float(min(base, adaptive) if base > 0 else adaptive)
+
     def _ts_should_accept_sample(
         self,
         strategy_name: str,
@@ -2317,23 +2326,41 @@ class VectorDistanceSimulator:
         if strategy_name == "FIFO Baseline":
             return True
 
+        if not buffer:
+            return True
+
         normalized = context["normalized"]
         buffer_positions = [entry.pos for entry in buffer]
         global_min = self._ts_min_cosine_distance(normalized, pos, buffer_positions)
+        effective_threshold = self._ts_effective_distance_threshold(strategy_name, context, params)
 
         if strategy_name == "Distance Gate FIFO":
-            return np.isinf(global_min) or global_min >= params["distance_threshold"]
+            warmup_target = min(context["capacity"], max(8, context["region_count"] * 2))
+            threshold = effective_threshold * (0.5 if len(buffer) < warmup_target else 1.0)
+            return np.isinf(global_min) or global_min >= threshold
 
         region = int(context["cluster_labels"][pos])
-        deficit = int(context["quotas"][region] - cluster_counts[region])
+        quota = int(context["quotas"][region])
+        region_count = int(cluster_counts[region])
+        deficit = quota - region_count
         local_positions = [entry.pos for entry in buffer if entry.region == region]
         local_min = self._ts_min_cosine_distance(normalized, pos, local_positions if local_positions else buffer_positions)
 
+        # Quota-First: 목표 비율이 부족한 region은 우선 채운다.
         if deficit > 0:
-            return np.isinf(local_min) or local_min >= params["distance_threshold"] * 0.25
+            return True
+
+        # 버퍼가 아직 덜 찼다면, 빈 region을 먼저 확보하고 같은 region 중복만 약하게 억제한다.
         if len(buffer) < context["capacity"]:
-            return np.isinf(global_min) or global_min >= params["distance_threshold"]
-        return np.isinf(local_min) or local_min >= params["distance_threshold"]
+            if region_count == 0:
+                return True
+            return np.isinf(local_min) or local_min >= effective_threshold * 0.35
+
+        # 버퍼가 찬 이후에는 over-quota region에서만 중복 억제를 강하게 적용한다.
+        if region_count > quota:
+            return np.isinf(local_min) or local_min >= effective_threshold
+
+        return np.isinf(local_min) or local_min >= effective_threshold * 0.5
 
     def _ts_choose_eviction_candidate(
         self,
@@ -2475,11 +2502,13 @@ class VectorDistanceSimulator:
                     kept_buffer.append(entry)
             buffer = kept_buffer
 
+            accepted_count = 0
             evicted_count = 0
             for pos in context["date_positions"].get(date, []):
                 processed += 1
                 accept = self._ts_should_accept_sample(strategy_name, pos, buffer, cluster_counts, context, params)
                 if accept:
+                    accepted_count += 1
                     entry = BufferEntry(
                         source_index=int(context["color_df"].index[pos]),
                         pos=int(pos),
@@ -2498,14 +2527,14 @@ class VectorDistanceSimulator:
                 if progress_callback and (processed % 100 == 0 or processed == total_samples):
                     progress_callback(processed / max(total_samples, 1))
 
+            incoming_count = len(context["date_positions"].get(date, []))
             buffer_indices = [entry.source_index for entry in buffer]
-            kept_today = sum(1 for entry in buffer if entry.date_key == date)
             metrics = self._ts_snapshot_metrics(buffer, cluster_counts, context, current_value, params)
             daily_result = self._ts_simulate_single_date(strategy_name, date, params, context)
             per_date[date] = {
-                "incoming": len(context["date_positions"].get(date, [])),
-                "accepted": kept_today,
-                "rejected": len(context["date_positions"].get(date, [])) - kept_today,
+                "incoming": incoming_count,
+                "accepted": accepted_count,
+                "rejected": max(incoming_count - accepted_count, 0),
                 "expired": expired_count,
                 "evicted": evicted_count,
                 "buffer_indices": buffer_indices,
