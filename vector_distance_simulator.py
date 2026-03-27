@@ -1587,7 +1587,7 @@ class VectorDistanceSimulator:
         self._ts_progress_var = tk.DoubleVar(value=0)
         ttk.Progressbar(sim_box, variable=self._ts_progress_var, maximum=100).pack(fill=tk.X, pady=(0, 6))
 
-        compare_box = ttk.LabelFrame(tp, text="🏁 Strategy Comparison", padding=8)
+        compare_box = ttk.LabelFrame(tp, text="🏁 Strategy Comparison Table", padding=8)
         compare_box.pack(fill=tk.X, pady=(0, 8))
         columns = ("strategy", "track", "match", "coverage", "fill", "age", "nn")
         self._ts_compare_tree = ttk.Treeview(compare_box, columns=columns, show="headings", height=5, selectmode="browse")
@@ -1615,19 +1615,19 @@ class VectorDistanceSimulator:
         self._ts_compare_tree.pack(fill=tk.X)
         self._ts_compare_tree.bind("<<TreeviewSelect>>", self._on_ts_result_select)
 
-        guide_box = ttk.LabelFrame(tp, text="ℹ Metric Guide (hover)", padding=8)
+        guide_box = ttk.LabelFrame(tp, text="ℹ Metric Guide (hover for help)", padding=8)
         guide_box.pack(fill=tk.X, pady=(0, 8))
         for name, help_text in TS_METRIC_HELP.items():
             lbl = ttk.Label(guide_box, text=name, foreground="#1f4e79")
             lbl.pack(anchor="w")
             self._bind_help_tooltip(lbl, help_text)
 
-        rv_box = ttk.LabelFrame(tp, text="🔬 Right View", padding=8)
+        rv_box = ttk.LabelFrame(tp, text="🔬 Selected Strategy View", padding=8)
         rv_box.pack(fill=tk.X, pady=(0, 8))
-        ttk.Radiobutton(rv_box, text="Step-by-Step Buffer", value="step",
+        ttk.Radiobutton(rv_box, text="Current Buffer Snapshot", value="step",
                         variable=self._ts_right_mode_var,
                         command=self._ts_draw_right).pack(anchor="w")
-        ttk.Radiobutton(rv_box, text="All Buffer Snapshots", value="all",
+        ttk.Radiobutton(rv_box, text="Buffer Evolution", value="all",
                         variable=self._ts_right_mode_var,
                         command=self._ts_draw_right).pack(anchor="w")
         rv_nav = ttk.Frame(rv_box)
@@ -1636,7 +1636,7 @@ class VectorDistanceSimulator:
         ttk.Label(rv_nav, textvariable=self._ts_right_date_label_var,
                   font=("Consolas", 9), anchor="center").pack(side=tk.LEFT, expand=True, fill=tk.X)
         ttk.Button(rv_nav, text="▶", width=4, command=self._ts_right_next).pack(side=tk.RIGHT, padx=2)
-        ttk.Checkbutton(rv_box, text="Show Mother Background",
+        ttk.Checkbutton(rv_box, text="Show Mother Background Overlay",
                         variable=self._show_right_bg_var,
                         command=self._ts_draw_right).pack(anchor="w", pady=(6, 0))
 
@@ -2043,8 +2043,8 @@ class VectorDistanceSimulator:
             return
 
         if color_df is None:
-            ax.set_title("Buffer Tracking View", fontsize=11, pad=12)
-            msg = "시뮬레이션을 실행하세요"
+            ax.set_title("Selected Strategy View", fontsize=11, pad=12)
+            msg = "전략을 실행한 뒤 비교 테이블에서 하나를 선택하세요"
             if is_3d:
                 ax.text2D(0.5, 0.5, msg, transform=ax.transAxes, ha="center", va="center", fontsize=11, color="gray")
             else:
@@ -2061,8 +2061,8 @@ class VectorDistanceSimulator:
 
         result = self._ts_sim_result
         if not result:
-            ax.set_title("Buffer Tracking View", fontsize=11, pad=12)
-            msg = "Run Selected 또는 Run All로 전략을 실행하세요"
+            ax.set_title("Selected Strategy View", fontsize=11, pad=12)
+            msg = "Run Selected 또는 Run All 실행 후, 비교 테이블에서 전략 1개를 선택하세요"
             if is_3d:
                 ax.text2D(0.5, 0.5, msg, transform=ax.transAxes, ha="center", va="center", fontsize=11, color="gray")
             else:
@@ -2094,7 +2094,7 @@ class VectorDistanceSimulator:
                     sc = ax.scatter(buffer_df["C1"], buffer_df["C2"], **kw)
                 self.right_scatter_lookup.append((sc, buffer_df, is_3d))
             ax.set_title(
-                f"{result['strategy']} — {date} | Track {snap['tracking_score']:.1f} | Match {snap['match_score']:.1f}",
+                f"Selected: {result['strategy']} | Snapshot: {date} | Buffer {len(snap['buffer_indices'])} | Track {snap['tracking_score']:.1f} | Match {snap['match_score']:.1f}",
                 fontsize=11, pad=12,
             )
         else:
@@ -2123,7 +2123,7 @@ class VectorDistanceSimulator:
                 if i == len(items) - 1:
                     self.right_scatter_lookup.append((sc, buffer_df, is_3d))
             ax.set_title(
-                f"{result['strategy']} — buffer evolution | Avg Track {result['mean_tracking_score']:.1f}",
+                f"Selected: {result['strategy']} | Buffer Evolution | Avg Track {result['mean_tracking_score']:.1f}",
                 fontsize=11, pad=12,
             )
 
