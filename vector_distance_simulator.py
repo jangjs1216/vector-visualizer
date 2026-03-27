@@ -19,8 +19,10 @@ import argparse
 import os
 import sys
 import time
+import threading
 import tkinter as tk
 from dataclasses import dataclass, field
+from queue import Empty, Queue
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable
 
@@ -623,6 +625,9 @@ class VectorDistanceSimulator:
         self._ts_compare_tree: ttk.Treeview | None = None
         self._ts_date_tree: ttk.Treeview | None = None
         self._ts_suppress_date_select: bool = False
+        self._ts_worker_thread: threading.Thread | None = None
+        self._ts_worker_queue: Queue | None = None
+        self._ts_worker_replace_all: bool = False
         self._ts_date_label_var = tk.StringVar(value="")
         self._ts_metrics_var = tk.StringVar(value="")
         self._ts_right_mode_var = tk.StringVar(value="step")
@@ -1632,6 +1637,8 @@ class VectorDistanceSimulator:
         ttk.Radiobutton(rv_box, text="Buffer Evolution", value="all",
                         variable=self._ts_right_mode_var,
                         command=self._on_ts_right_mode_change).pack(anchor="w")
+        ttk.Label(rv_box, text="Snapshot은 해당 날짜 단독 시뮬레이션, Evolution은 첫 날짜부터 누적 버퍼입니다.",
+                  wraplength=300, justify="left", foreground="gray").pack(anchor="w", pady=(4, 0))
         rv_nav = ttk.Frame(rv_box)
         rv_nav.pack(fill=tk.X, pady=(4, 0))
         ttk.Button(rv_nav, text="◀", width=4, command=self._ts_right_prev).pack(side=tk.LEFT, padx=2)
@@ -1789,6 +1796,26 @@ class VectorDistanceSimulator:
             )
         return "\n".join(lines)
 
+    def _ts_get_view_snapshot(self, info: dict, mode: str | None = None) -> dict:
+        mode = mode or self._ts_right_mode_var.get()
+        if mode == "step":
+            return {
+                "buffer_indices": info.get("daily_buffer_indices", []),
+                "tracking_score": float(info.get("daily_tracking_score", 0.0)),
+                "match_score": float(info.get("daily_match_score", 0.0)),
+                "coverage_score": float(info.get("daily_coverage_score", 0.0)),
+                "avg_age_days": float(info.get("daily_avg_age_days", 0.0)),
+                "label": "Daily Snapshot",
+            }
+        return {
+            "buffer_indices": info.get("buffer_indices", []),
+            "tracking_score": float(info.get("tracking_score", 0.0)),
+            "match_score": float(info.get("match_score", 0.0)),
+            "coverage_score": float(info.get("coverage_score", 0.0)),
+            "avg_age_days": float(info.get("avg_age_days", 0.0)),
+            "label": "Cumulative Evolution",
+        }
+
     def _refresh_ts_date_table(self) -> None:
         if self._ts_date_tree is None:
             return
@@ -1797,16 +1824,18 @@ class VectorDistanceSimulator:
             self._ts_date_tree.delete(*self._ts_date_tree.get_children())
             if not self._ts_sim_result:
                 return
+            mode = self._ts_right_mode_var.get()
             for idx, (date, info) in enumerate(self._ts_sim_result["per_date"].items()):
+                snap = self._ts_get_view_snapshot(info, mode)
                 self._ts_date_tree.insert(
                     "", "end", iid=str(idx),
                     values=(
                         date,
-                        len(info["buffer_indices"]),
-                        f"{info['tracking_score']:.1f}",
-                        f"{info['match_score']:.1f}",
-                        f"{info['coverage_score']:.1f}",
-                        f"{info['avg_age_days']:.1f}",
+                        len(snap["buffer_indices"]),
+                        f"{snap['tracking_score']:.1f}",
+                        f"{snap['match_score']:.1f}",
+                        f"{snap['coverage_score']:.1f}",
+                        f"{snap['avg_age_days']:.1f}",
                     ),
                 )
             current_idx = min(self._ts_right_date_idx, len(self._ts_sim_result["per_date"]) - 1)
@@ -2167,50 +2196,32 @@ class VectorDistanceSimulator:
         cmap = plt.get_cmap("coolwarm")
         right_mode = self._ts_right_mode_var.get()
 
-        if right_mode == "step":
-            idx = min(self._ts_right_date_idx, len(items) - 1)
-            date, snap = items[idx]
-            buffer_df = color_df[color_df.index.isin(snap["buffer_indices"])]
-            if len(buffer_df) > 0:
-                buffer_df = buffer_df.reset_index(drop=True)
-                color = "blue" if self._show_right_bg_var.get() else DATASET_COLORS[1]
-                kw = dict(s=self.style.point_size * 1.4, alpha=0.88, c=[color],
-                         label=f"{result['strategy']} ({len(buffer_df)})",
-                         edgecolors="white", linewidths=0.5, picker=True)
-                if is_3d:
-                    sc = ax.scatter(buffer_df["C1"], buffer_df["C2"], buffer_df["C3"], depthshade=True, **kw)
-                else:
-                    sc = ax.scatter(buffer_df["C1"], buffer_df["C2"], **kw)
-                self.right_scatter_lookup.append((sc, buffer_df, is_3d))
-            ax.set_title(
-                f"Selected: {result['strategy']} | Snapshot: {date} | Buffer {len(snap['buffer_indices'])} | Track {snap['tracking_score']:.1f} | Match {snap['match_score']:.1f}",
-                fontsize=11, pad=12,
+        idx = min(self._ts_right_date_idx, len(items) - 1)
+        date, snap = items[idx]
+        view = self._ts_get_view_snapshot(snap, right_mode)
+        buffer_df = color_df[color_df.index.isin(view["buffer_indices"])]
+        if len(buffer_df) > 0:
+            buffer_df = buffer_df.reset_index(drop=True)
+            color = "blue" if self._show_right_bg_var.get() else (DATASET_COLORS[1] if right_mode == "step" else DATASET_COLORS[0])
+            kw = dict(
+                s=self.style.point_size * (1.4 if right_mode == "step" else 1.3),
+                alpha=0.88 if right_mode == "step" else 0.9,
+                c=[color],
+                label=f"{view['label']} ({len(buffer_df)})",
+                edgecolors="white",
+                linewidths=0.5,
+                picker=True,
             )
-        else:
-            idx = min(self._ts_right_date_idx, len(items) - 1)
-            date, snap = items[idx]
-            buffer_df = color_df[color_df.index.isin(snap["buffer_indices"])]
-            if len(buffer_df) > 0:
-                buffer_df = buffer_df.reset_index(drop=True)
-                c = "blue" if self._show_right_bg_var.get() else DATASET_COLORS[0]
-                kw = dict(
-                    s=self.style.point_size * 1.3,
-                    alpha=0.9,
-                    c=[c],
-                    label=f"{date} ({len(buffer_df)})",
-                    edgecolors="white",
-                    linewidths=0.5,
-                    picker=True,
-                )
-                if is_3d:
-                    sc = ax.scatter(buffer_df["C1"], buffer_df["C2"], buffer_df["C3"], depthshade=True, **kw)
-                else:
-                    sc = ax.scatter(buffer_df["C1"], buffer_df["C2"], **kw)
-                self.right_scatter_lookup.append((sc, buffer_df, is_3d))
-            ax.set_title(
-                f"Selected: {result['strategy']} | Evolution Date: {date} | Buffer {len(snap['buffer_indices'])} | Track {snap['tracking_score']:.1f} | Match {snap['match_score']:.1f}",
-                fontsize=11, pad=12,
-            )
+            if is_3d:
+                sc = ax.scatter(buffer_df["C1"], buffer_df["C2"], buffer_df["C3"], depthshade=True, **kw)
+            else:
+                sc = ax.scatter(buffer_df["C1"], buffer_df["C2"], **kw)
+            self.right_scatter_lookup.append((sc, buffer_df, is_3d))
+        title_mode = "Snapshot" if right_mode == "step" else "Evolution"
+        ax.set_title(
+            f"Selected: {result['strategy']} | {title_mode}: {date} | Buffer {len(view['buffer_indices'])} | Track {view['tracking_score']:.1f} | Match {view['match_score']:.1f}",
+            fontsize=11, pad=12,
+        )
 
         ax.grid(True, alpha=0.25)
         handles, labels = ax.get_legend_handles_labels()
@@ -2222,9 +2233,8 @@ class VectorDistanceSimulator:
 
     # ── Time-series simulation engine ─────────────────────────
 
-    def _prepare_ts_simulation_context(self, params: dict) -> dict | None:
-        sel_colors = self._get_selected_colors()
-        if not sel_colors or not self._ts_dates:
+    def _prepare_ts_simulation_context_for(self, sel_colors: list[str], dates: list[str], params: dict) -> dict | None:
+        if not sel_colors or not dates:
             return None
 
         color_mask = self.df["color"].astype(str).isin(sel_colors)
@@ -2255,7 +2265,6 @@ class VectorDistanceSimulator:
         mother_props /= max(mother_props.sum(), 1.0)
         quotas = allocate_quotas(mother_props, capacity)
 
-        dates = self._ts_dates
         parsed = pd.to_datetime(pd.Series(dates), errors="coerce")
         if parsed.notna().all():
             date_values = {date: parsed.iloc[i].normalize() for i, date in enumerate(dates)}
@@ -2277,8 +2286,13 @@ class VectorDistanceSimulator:
             "region_count": region_count,
             "date_values": date_values,
             "date_positions": date_positions,
+            "dates": list(dates),
             "mother_mean_nn": mean_nearest_neighbor_distance(normalized),
         }
+
+    def _prepare_ts_simulation_context(self, params: dict) -> dict | None:
+        sel_colors = sorted(self._get_selected_colors())
+        return self._prepare_ts_simulation_context_for(sel_colors, list(self._ts_dates), params)
 
     def _ts_age_days(self, current_value: pd.Timestamp | int, sample_value: pd.Timestamp | int) -> float:
         if isinstance(current_value, pd.Timestamp) and isinstance(sample_value, pd.Timestamp):
@@ -2399,6 +2413,42 @@ class VectorDistanceSimulator:
             "mean_nn_dist": float(mean_nn_dist),
         }
 
+    def _ts_simulate_single_date(
+        self,
+        strategy_name: str,
+        date: str,
+        params: dict,
+        context: dict,
+    ) -> dict:
+        current_value = context["date_values"][date]
+        buffer: list[BufferEntry] = []
+        cluster_counts = np.zeros(context["region_count"], dtype=int)
+        positions = context["date_positions"].get(date, [])
+
+        for pos in positions:
+            accept = self._ts_should_accept_sample(strategy_name, pos, buffer, cluster_counts, context, params)
+            if not accept:
+                continue
+            entry = BufferEntry(
+                source_index=int(context["color_df"].index[pos]),
+                pos=int(pos),
+                date_key=date,
+                time_value=current_value,
+                region=int(context["cluster_labels"][pos]),
+            )
+            buffer.append(entry)
+            cluster_counts[entry.region] += 1
+            while len(buffer) > context["capacity"]:
+                evict_idx = self._ts_choose_eviction_candidate(strategy_name, buffer, cluster_counts, context, current_value)
+                evicted = buffer.pop(evict_idx)
+                cluster_counts[evicted.region] -= 1
+
+        metrics = self._ts_snapshot_metrics(buffer, cluster_counts, context, current_value, params)
+        return {
+            "buffer_indices": [entry.source_index for entry in buffer],
+            **metrics,
+        }
+
     def _ts_simulate_strategy(
         self,
         strategy_name: str,
@@ -2412,7 +2462,7 @@ class VectorDistanceSimulator:
         total_samples = sum(len(v) for v in context["date_positions"].values())
         processed = 0
 
-        for date in self._ts_dates:
+        for date in context["dates"]:
             current_value = context["date_values"][date]
 
             kept_buffer = []
@@ -2451,6 +2501,7 @@ class VectorDistanceSimulator:
             buffer_indices = [entry.source_index for entry in buffer]
             kept_today = sum(1 for entry in buffer if entry.date_key == date)
             metrics = self._ts_snapshot_metrics(buffer, cluster_counts, context, current_value, params)
+            daily_result = self._ts_simulate_single_date(strategy_name, date, params, context)
             per_date[date] = {
                 "incoming": len(context["date_positions"].get(date, [])),
                 "accepted": kept_today,
@@ -2458,6 +2509,12 @@ class VectorDistanceSimulator:
                 "expired": expired_count,
                 "evicted": evicted_count,
                 "buffer_indices": buffer_indices,
+                "daily_buffer_indices": daily_result["buffer_indices"],
+                "daily_tracking_score": daily_result["tracking_score"],
+                "daily_match_score": daily_result["match_score"],
+                "daily_coverage_score": daily_result["coverage_score"],
+                "daily_avg_age_days": daily_result["avg_age_days"],
+                "daily_mean_nn_dist": daily_result["mean_nn_dist"],
                 **metrics,
             }
 
@@ -2481,73 +2538,133 @@ class VectorDistanceSimulator:
         }
         return result
 
-    def _ts_run_selected_strategy(self) -> None:
+    def _ts_set_run_controls(self, running: bool) -> None:
+        state = "disabled" if running else "normal"
+        self._ts_sim_button.config(state=state)
+        self._ts_run_all_button.config(state=state)
+
+    def _ts_worker_main(
+        self,
+        strategy_names: list[str],
+        params: dict,
+        sel_colors: list[str],
+        dates: list[str],
+        replace_all: bool,
+    ) -> None:
+        assert self._ts_worker_queue is not None
+        try:
+            context = self._prepare_ts_simulation_context_for(sel_colors, dates, params)
+            if context is None:
+                self._ts_worker_queue.put({"type": "error", "message": "Not enough data"})
+                return
+
+            total = max(len(strategy_names), 1)
+            results = []
+            for idx, strategy_name in enumerate(strategy_names):
+                base = idx / total
+                span = 1.0 / total
+                self._ts_worker_queue.put({
+                    "type": "status",
+                    "message": f"Running {strategy_name} ({idx + 1}/{total})...",
+                })
+                result = self._ts_simulate_strategy(
+                    strategy_name,
+                    params,
+                    context,
+                    progress_callback=lambda frac, b=base, s=span, name=strategy_name: self._ts_worker_queue.put({
+                        "type": "progress",
+                        "progress": (b + frac * s) * 100.0,
+                        "message": f"Running {name}... {(b + frac * s) * 100.0:.0f}%",
+                    }),
+                )
+                results.append(result)
+                self._ts_worker_queue.put({
+                    "type": "partial_result",
+                    "result": result,
+                    "replace_all": replace_all,
+                })
+            self._ts_worker_queue.put({"type": "done", "results": results, "replace_all": replace_all})
+        except Exception as exc:
+            self._ts_worker_queue.put({"type": "error", "message": str(exc)})
+
+    def _ts_apply_partial_result(self, result: dict, replace_all: bool) -> None:
+        if replace_all:
+            self._ts_results = [r for r in self._ts_results if r["strategy"] != result["strategy"]]
+            self._ts_results.append(result)
+        else:
+            self._ts_results = [r for r in self._ts_results if r["strategy"] != result["strategy"]]
+            self._ts_results.append(result)
+        self._refresh_ts_comparison_table()
+
+    def _ts_poll_worker_queue(self) -> None:
+        if self._ts_worker_queue is None:
+            return
+        done = False
+        while True:
+            try:
+                msg = self._ts_worker_queue.get_nowait()
+            except Empty:
+                break
+
+            msg_type = msg.get("type")
+            if msg_type == "progress":
+                self._ts_progress_var.set(float(msg.get("progress", 0.0)))
+                self.status_var.set(msg.get("message", "Running simulation..."))
+            elif msg_type == "status":
+                self.status_var.set(msg.get("message", "Running simulation..."))
+            elif msg_type == "partial_result":
+                self._ts_apply_partial_result(msg["result"], bool(msg.get("replace_all", False)))
+            elif msg_type == "done":
+                done = True
+                self._ts_progress_var.set(100)
+                if self._ts_results:
+                    best = max(self._ts_results, key=lambda r: r["mean_tracking_score"])
+                    self.status_var.set(f"Best strategy: {best['strategy']} | Track {best['mean_tracking_score']:.1f}")
+            elif msg_type == "error":
+                done = True
+                self._ts_metrics_var.set(msg.get("message", "Simulation failed"))
+                self.status_var.set(msg.get("message", "Simulation failed"))
+
+        if done:
+            self._ts_set_run_controls(False)
+            self._ts_worker_thread = None
+            self._ts_worker_queue = None
+            return
+
+        self.root.after(80, self._ts_poll_worker_queue)
+
+    def _ts_start_worker(self, strategy_names: list[str], replace_all: bool) -> None:
+        if self._ts_worker_thread is not None and self._ts_worker_thread.is_alive():
+            return
         if not self._ts_dates:
             return
+
         params = self._get_ts_strategy_params()
-        context = self._prepare_ts_simulation_context(params)
-        if context is None:
+        sel_colors = sorted(self._get_selected_colors())
+        if not sel_colors:
             self._ts_metrics_var.set("Not enough data")
             return
 
-        strategy_name = self._ts_strategy_var.get()
-        self.status_var.set(f"Running {strategy_name}...")
+        if replace_all:
+            self._clear_ts_results()
+        self._ts_worker_replace_all = replace_all
         self._ts_progress_var.set(0)
-        self._ts_sim_button.config(state="disabled")
-        self._ts_run_all_button.config(state="disabled")
-        self.root.update_idletasks()
-
-        result = self._ts_simulate_strategy(
-            strategy_name, params, context,
-            progress_callback=lambda frac: (self._ts_progress_var.set(frac * 100.0), self.root.update_idletasks()),
+        self.status_var.set("Preparing simulation...")
+        self._ts_set_run_controls(True)
+        self._ts_worker_queue = Queue()
+        self._ts_worker_thread = threading.Thread(
+            target=self._ts_worker_main,
+            args=(strategy_names, params, sel_colors, list(self._ts_dates), replace_all),
+            daemon=True,
         )
+        self._ts_worker_thread.start()
+        self.root.after(80, self._ts_poll_worker_queue)
 
-        self._ts_sim_button.config(state="normal")
-        self._ts_run_all_button.config(state="normal")
-        self._ts_progress_var.set(100)
-
-        self._ts_results = [r for r in self._ts_results if r["strategy"] != strategy_name]
-        self._ts_results.append(result)
-        self._refresh_ts_comparison_table()
-        self.status_var.set(f"Completed: {strategy_name} | Track {result['mean_tracking_score']:.1f}")
+    def _ts_run_selected_strategy(self) -> None:
+        self._ts_start_worker([self._ts_strategy_var.get()], replace_all=False)
 
     def _ts_run_all_strategies(self) -> None:
-        if not self._ts_dates:
-            return
-        params = self._get_ts_strategy_params()
-        context = self._prepare_ts_simulation_context(params)
-        if context is None:
-            self._ts_metrics_var.set("Not enough data")
-            return
-
-        self.status_var.set("Running all strategies...")
-        self._ts_progress_var.set(0)
-        self._ts_sim_button.config(state="disabled")
-        self._ts_run_all_button.config(state="disabled")
-        self.root.update_idletasks()
-
-        strategy_names = list(BUFFER_STRATEGIES.keys())
-        results = []
-        for idx, strategy_name in enumerate(strategy_names):
-            base = idx / max(len(strategy_names), 1)
-            span = 1.0 / max(len(strategy_names), 1)
-            result = self._ts_simulate_strategy(
-                strategy_name, params, context,
-                progress_callback=lambda frac, b=base, s=span: (
-                    self._ts_progress_var.set((b + frac * s) * 100.0),
-                    self.root.update_idletasks(),
-                ),
-            )
-            results.append(result)
-
-        self._ts_results = results
-        self._refresh_ts_comparison_table()
-        self._ts_sim_button.config(state="normal")
-        self._ts_run_all_button.config(state="normal")
-        self._ts_progress_var.set(100)
-        if self._ts_results:
-            best = max(self._ts_results, key=lambda r: r["mean_tracking_score"])
-            self.status_var.set(f"Best strategy: {best['strategy']} | Track {best['mean_tracking_score']:.1f}")
+        self._ts_start_worker(list(BUFFER_STRATEGIES.keys()), replace_all=True)
 
     def _ts_run_simulation(self) -> None:
         self._ts_run_selected_strategy()
