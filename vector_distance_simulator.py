@@ -1658,23 +1658,25 @@ class VectorDistanceSimulator:
 
         date_box = ttk.LabelFrame(tp, text="🗓 Date Snapshot Table", padding=8)
         date_box.pack(fill=tk.X, pady=(0, 8))
-        date_cols = ("date", "buf", "track", "match", "cover", "age")
+        date_cols = ("date", "buf", "keep", "add", "drop", "track", "match")
         self._ts_date_tree = ttk.Treeview(date_box, columns=date_cols, show="headings", height=6, selectmode="browse")
         date_heads = {
             "date": "Date",
             "buf": "Buffer",
+            "keep": "Keep",
+            "add": "Add",
+            "drop": "Drop",
             "track": "Track",
             "match": "Match",
-            "cover": "Cover",
-            "age": "AvgAge",
         }
         date_widths = {
-            "date": 88,
+            "date": 80,
             "buf": 48,
+            "keep": 48,
+            "add": 48,
+            "drop": 48,
             "track": 52,
             "match": 52,
-            "cover": 52,
-            "age": 58,
         }
         for col in date_cols:
             self._ts_date_tree.heading(col, text=date_heads[col])
@@ -1839,10 +1841,11 @@ class VectorDistanceSimulator:
                     values=(
                         date,
                         len(snap["buffer_indices"]),
+                        int(info.get("retained_count", 0)),
+                        int(info.get("added_count", 0)),
+                        int(info.get("dropped_count", 0)),
                         f"{snap['tracking_score']:.1f}",
                         f"{snap['match_score']:.1f}",
-                        f"{snap['coverage_score']:.1f}",
-                        f"{snap['avg_age_days']:.1f}",
                     ),
                 )
             current_idx = min(self._ts_right_date_idx, len(self._ts_sim_result["per_date"]) - 1)
@@ -2207,26 +2210,49 @@ class VectorDistanceSimulator:
         date, snap = items[idx]
         view = self._ts_get_view_snapshot(snap, right_mode)
         buffer_df = color_df[color_df.index.isin(view["buffer_indices"])]
-        if len(buffer_df) > 0:
-            buffer_df = buffer_df.reset_index(drop=True)
-            color = "blue" if self._show_right_bg_var.get() else (DATASET_COLORS[1] if right_mode == "step" else DATASET_COLORS[0])
-            kw = dict(
-                s=self.style.point_size * (1.4 if right_mode == "step" else 1.3),
-                alpha=0.88 if right_mode == "step" else 0.9,
-                c=[color],
-                label=f"{view['label']} ({len(buffer_df)})",
-                edgecolors="white",
-                linewidths=0.5,
-                picker=True,
-            )
-            if is_3d:
-                sc = ax.scatter(buffer_df["C1"], buffer_df["C2"], buffer_df["C3"], depthshade=True, **kw)
-            else:
-                sc = ax.scatter(buffer_df["C1"], buffer_df["C2"], **kw)
-            self.right_scatter_lookup.append((sc, buffer_df, is_3d))
+        if right_mode == "all" and idx > 0:
+            prev_date, prev_snap = items[idx - 1]
+            prev_set = set(prev_snap["buffer_indices"])
+            cur_set = set(view["buffer_indices"])
+            kept_df = color_df[color_df.index.isin(prev_set & cur_set)]
+            added_df = color_df[color_df.index.isin(cur_set - prev_set)]
+            if len(kept_df) > 0:
+                kept_df = kept_df.reset_index(drop=True)
+                kw = dict(s=self.style.point_size * 1.15, alpha=0.72, c=[(0.216, 0.494, 0.722, 0.75)], label=f"Retained ({len(kept_df)})", picker=True)
+                if is_3d:
+                    sc = ax.scatter(kept_df["C1"], kept_df["C2"], kept_df["C3"], depthshade=True, **kw)
+                else:
+                    sc = ax.scatter(kept_df["C1"], kept_df["C2"], **kw)
+                self.right_scatter_lookup.append((sc, kept_df, is_3d))
+            if len(added_df) > 0:
+                added_df = added_df.reset_index(drop=True)
+                kw = dict(s=self.style.point_size * 1.45, alpha=0.92, c=[(1.000, 0.498, 0.000, 0.90)], label=f"Added ({len(added_df)})", edgecolors="white", linewidths=0.4, picker=True)
+                if is_3d:
+                    sc = ax.scatter(added_df["C1"], added_df["C2"], added_df["C3"], depthshade=True, **kw)
+                else:
+                    sc = ax.scatter(added_df["C1"], added_df["C2"], **kw)
+                self.right_scatter_lookup.append((sc, added_df, is_3d))
+        else:
+            if len(buffer_df) > 0:
+                buffer_df = buffer_df.reset_index(drop=True)
+                color = "blue" if self._show_right_bg_var.get() else (DATASET_COLORS[1] if right_mode == "step" else DATASET_COLORS[0])
+                kw = dict(
+                    s=self.style.point_size * (1.4 if right_mode == "step" else 1.3),
+                    alpha=0.88 if right_mode == "step" else 0.9,
+                    c=[color],
+                    label=f"{view['label']} ({len(buffer_df)})",
+                    edgecolors="white",
+                    linewidths=0.5,
+                    picker=True,
+                )
+                if is_3d:
+                    sc = ax.scatter(buffer_df["C1"], buffer_df["C2"], buffer_df["C3"], depthshade=True, **kw)
+                else:
+                    sc = ax.scatter(buffer_df["C1"], buffer_df["C2"], **kw)
+                self.right_scatter_lookup.append((sc, buffer_df, is_3d))
         title_mode = "Snapshot" if right_mode == "step" else "Evolution"
         ax.set_title(
-            f"Selected: {result['strategy']} | {title_mode}: {date} | Buffer {len(view['buffer_indices'])} | Track {view['tracking_score']:.1f} | Match {view['match_score']:.1f}",
+            f"Selected: {result['strategy']} | {title_mode}: {date} | Buffer {len(view['buffer_indices'])} | Keep {int(snap.get('retained_count', 0))} | Add {int(snap.get('added_count', 0))} | Drop {int(snap.get('dropped_count', 0))}",
             fontsize=11, pad=12,
         )
 
@@ -2509,6 +2535,7 @@ class VectorDistanceSimulator:
         per_date: dict[str, dict] = {}
         total_samples = sum(len(v) for v in context["date_positions"].values())
         processed = 0
+        prev_buffer_set: set[int] = set()
 
         for date in context["dates"]:
             current_value = context["date_values"][date]
@@ -2550,6 +2577,10 @@ class VectorDistanceSimulator:
 
             incoming_count = len(context["date_positions"].get(date, []))
             buffer_indices = [entry.source_index for entry in buffer]
+            buffer_set = set(buffer_indices)
+            retained_count = len(prev_buffer_set & buffer_set)
+            added_count = len(buffer_set - prev_buffer_set)
+            dropped_count = len(prev_buffer_set - buffer_set)
             metrics = self._ts_snapshot_metrics(buffer, cluster_counts, context, current_value, params)
             daily_result = self._ts_simulate_single_date(strategy_name, date, params, context)
             per_date[date] = {
@@ -2559,6 +2590,9 @@ class VectorDistanceSimulator:
                 "expired": expired_count,
                 "evicted": evicted_count,
                 "buffer_indices": buffer_indices,
+                "retained_count": retained_count,
+                "added_count": added_count,
+                "dropped_count": dropped_count,
                 "daily_buffer_indices": daily_result["buffer_indices"],
                 "daily_tracking_score": daily_result["tracking_score"],
                 "daily_match_score": daily_result["match_score"],
@@ -2567,6 +2601,7 @@ class VectorDistanceSimulator:
                 "daily_mean_nn_dist": daily_result["mean_nn_dist"],
                 **metrics,
             }
+            prev_buffer_set = buffer_set
 
         snapshots = list(per_date.values())
         final = snapshots[-1] if snapshots else {
