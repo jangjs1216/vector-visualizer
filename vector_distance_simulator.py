@@ -622,6 +622,7 @@ class VectorDistanceSimulator:
         self._ts_selected_result_idx: int | None = None
         self._ts_compare_tree: ttk.Treeview | None = None
         self._ts_date_tree: ttk.Treeview | None = None
+        self._ts_suppress_date_select: bool = False
         self._ts_date_label_var = tk.StringVar(value="")
         self._ts_metrics_var = tk.StringVar(value="")
         self._ts_right_mode_var = tk.StringVar(value="step")
@@ -1791,26 +1792,44 @@ class VectorDistanceSimulator:
     def _refresh_ts_date_table(self) -> None:
         if self._ts_date_tree is None:
             return
-        self._ts_date_tree.delete(*self._ts_date_tree.get_children())
-        if not self._ts_sim_result:
+        self._ts_suppress_date_select = True
+        try:
+            self._ts_date_tree.delete(*self._ts_date_tree.get_children())
+            if not self._ts_sim_result:
+                return
+            for idx, (date, info) in enumerate(self._ts_sim_result["per_date"].items()):
+                self._ts_date_tree.insert(
+                    "", "end", iid=str(idx),
+                    values=(
+                        date,
+                        len(info["buffer_indices"]),
+                        f"{info['tracking_score']:.1f}",
+                        f"{info['match_score']:.1f}",
+                        f"{info['coverage_score']:.1f}",
+                        f"{info['avg_age_days']:.1f}",
+                    ),
+                )
+            current_idx = min(self._ts_right_date_idx, len(self._ts_sim_result["per_date"]) - 1)
+            self._select_ts_date_row(current_idx)
+        finally:
+            self._ts_suppress_date_select = False
+
+    def _select_ts_date_row(self, idx: int) -> None:
+        if self._ts_date_tree is None:
             return
-        for idx, (date, info) in enumerate(self._ts_sim_result["per_date"].items()):
-            self._ts_date_tree.insert(
-                "", "end", iid=str(idx),
-                values=(
-                    date,
-                    len(info["buffer_indices"]),
-                    f"{info['tracking_score']:.1f}",
-                    f"{info['match_score']:.1f}",
-                    f"{info['coverage_score']:.1f}",
-                    f"{info['avg_age_days']:.1f}",
-                ),
-            )
-        current_idx = min(self._ts_right_date_idx, len(self._ts_sim_result["per_date"]) - 1)
-        self._ts_date_tree.selection_set(str(current_idx))
+        iid = str(idx)
+        if not self._ts_date_tree.exists(iid):
+            return
+        self._ts_suppress_date_select = True
+        try:
+            self._ts_date_tree.selection_set(iid)
+            self._ts_date_tree.focus(iid)
+            self._ts_date_tree.see(iid)
+        finally:
+            self._ts_suppress_date_select = False
 
     def _on_ts_date_select(self, _event=None) -> None:
-        if self._ts_date_tree is None or not self._ts_sim_result:
+        if self._ts_suppress_date_select or self._ts_date_tree is None or not self._ts_sim_result:
             return
         selected = self._ts_date_tree.selection()
         if not selected:
@@ -1820,8 +1839,6 @@ class VectorDistanceSimulator:
         if dates:
             date = dates[self._ts_right_date_idx]
             self._ts_right_date_label_var.set(f"{date}  ({self._ts_right_date_idx + 1}/{len(dates)})")
-        if self._ts_date_tree is not None and self._ts_date_tree.exists(str(self._ts_right_date_idx)):
-            self._ts_date_tree.selection_set(str(self._ts_right_date_idx))
         self._ts_draw_right()
 
     def _on_ts_right_mode_change(self) -> None:
@@ -1938,8 +1955,7 @@ class VectorDistanceSimulator:
         self._ts_right_date_idx = max(0, self._ts_right_date_idx - 1)
         date = dates[self._ts_right_date_idx]
         self._ts_right_date_label_var.set(f"{date}  ({self._ts_right_date_idx + 1}/{len(dates)})")
-        if self._ts_date_tree is not None and self._ts_date_tree.exists(str(self._ts_right_date_idx)):
-            self._ts_date_tree.selection_set(str(self._ts_right_date_idx))
+        self._select_ts_date_row(self._ts_right_date_idx)
         self._ts_draw_right()
 
     def _ts_right_next(self) -> None:
@@ -1951,8 +1967,7 @@ class VectorDistanceSimulator:
         self._ts_right_date_idx = min(len(dates) - 1, self._ts_right_date_idx + 1)
         date = dates[self._ts_right_date_idx]
         self._ts_right_date_label_var.set(f"{date}  ({self._ts_right_date_idx + 1}/{len(dates)})")
-        if self._ts_date_tree is not None and self._ts_date_tree.exists(str(self._ts_right_date_idx)):
-            self._ts_date_tree.selection_set(str(self._ts_right_date_idx))
+        self._select_ts_date_row(self._ts_right_date_idx)
         self._ts_draw_right()
 
     def _get_selected_colors(self) -> set[str]:
