@@ -506,6 +506,10 @@ class VectorDistanceSimulator:
         self.right_figure = plt.Figure(figsize=(7, 6), dpi=100, facecolor="white")
         self.right_ax = None
         self.right_canvas = None
+        self.right_scatter_lookup: list[tuple[object, pd.DataFrame, bool]] = []
+        self.right_hover_cid = None
+        self.right_leave_cid = None
+        self.right_click_cid = None
 
         # UMAP cache
         self._umap_cache: dict[int, np.ndarray] = {}
@@ -1010,16 +1014,16 @@ class VectorDistanceSimulator:
         if self._tooltip is not None:
             self._tooltip.withdraw()
 
-    def _find_closest_point(self, event):
-        """Find the closest scatter point to the mouse event across all scatter lookups.
-        Returns (row, gdf) or (None, None)."""
-        if self.left_ax is None or event.inaxes is None:
-            return None, None
+    def _find_closest_point(self, event, scatter_lookup):
+        """Find the closest scatter point to the mouse event across given scatter lookups.
+        Returns (row, dist) or (None, inf)."""
+        if event.inaxes is None:
+            return None, float("inf")
 
         best_row = None
         best_dist = float("inf")
 
-        for scatter, gdf, is_3d in self.left_scatter_lookup:
+        for scatter, gdf, is_3d in scatter_lookup:
             ok, info = scatter.contains(event)
             ind = info.get("ind", [])
             if not ok or len(ind) == 0:
@@ -1045,7 +1049,7 @@ class VectorDistanceSimulator:
         if self.left_ax is None or event.inaxes != self.left_ax:
             self._hide_annotation()
             return
-        row, _ = self._find_closest_point(event)
+        row, _ = self._find_closest_point(event, self.left_scatter_lookup)
         if row is not None:
             self._show_annotation(row, event)
         else:
@@ -1055,7 +1059,25 @@ class VectorDistanceSimulator:
         """Click on a point to open image preview."""
         if self.left_ax is None or event.inaxes is None:
             return
-        row, _ = self._find_closest_point(event)
+        row, _ = self._find_closest_point(event, self.left_scatter_lookup)
+        if row is not None:
+            self._open_image(row)
+
+    def _on_hover_right(self, event):
+        if self.right_ax is None or event.inaxes != self.right_ax:
+            self._hide_annotation()
+            return
+        row, _ = self._find_closest_point(event, self.right_scatter_lookup)
+        if row is not None:
+            self._show_annotation(row, event)
+        else:
+            self._hide_annotation()
+
+    def _on_click_right(self, event):
+        """Click on a simulation view point to open image preview."""
+        if self.right_ax is None or event.inaxes is None:
+            return
+        row, _ = self._find_closest_point(event, self.right_scatter_lookup)
         if row is not None:
             self._open_image(row)
 
@@ -1130,6 +1152,19 @@ class VectorDistanceSimulator:
         self.hover_cid = self.left_canvas.mpl_connect("motion_notify_event", self._on_hover_left)
         self.leave_cid = self.left_canvas.mpl_connect("figure_leave_event", self._on_leave_left)
         self.click_cid = self.left_canvas.mpl_connect("button_press_event", self._on_click_left)
+
+    def _connect_right_hover(self):
+        if self.right_canvas is None:
+            return
+        if self.right_hover_cid is not None:
+            self.right_canvas.mpl_disconnect(self.right_hover_cid)
+        if self.right_leave_cid is not None:
+            self.right_canvas.mpl_disconnect(self.right_leave_cid)
+        if self.right_click_cid is not None:
+            self.right_canvas.mpl_disconnect(self.right_click_cid)
+        self.right_hover_cid = self.right_canvas.mpl_connect("motion_notify_event", self._on_hover_right)
+        self.right_leave_cid = self.right_canvas.mpl_connect("figure_leave_event", self._on_leave_left)
+        self.right_click_cid = self.right_canvas.mpl_connect("button_press_event", self._on_click_right)
 
     # ── Redraw (core method) ─────────────────────────────────
 
@@ -1278,6 +1313,7 @@ class VectorDistanceSimulator:
     def _redraw_right_view(self) -> None:
         """Redraw the right comparison view with checked simulation datasets."""
         self.right_figure.clf()
+        self.right_scatter_lookup = []
         is_3d = self.dimension_var.get() == "3D"
         method = self.method_var.get()
         n_dim = 3 if is_3d else 2
@@ -1342,10 +1378,15 @@ class VectorDistanceSimulator:
                 picker=True,
             )
 
+            plot_df = accepted_df.copy()
+            plot_df["C1"] = emb[:, 0]
+            plot_df["C2"] = emb[:, 1]
             if is_3d and n_dim >= 3:
-                ax.scatter(emb[:, 0], emb[:, 1], emb[:, 2], depthshade=True, **kw)
+                plot_df["C3"] = emb[:, 2]
+                sc = ax.scatter(emb[:, 0], emb[:, 1], emb[:, 2], depthshade=True, **kw)
             else:
-                ax.scatter(emb[:, 0], emb[:, 1], **kw)
+                sc = ax.scatter(emb[:, 0], emb[:, 1], **kw)
+            self.right_scatter_lookup.append((sc, plot_df.reset_index(drop=True), is_3d))
 
         ax.set_title(
             f"Simulation Comparison ({len(active_datasets)} datasets, {total_points:,} pts)",
@@ -1354,6 +1395,7 @@ class VectorDistanceSimulator:
         ax.grid(True, alpha=0.25)
         ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0, fontsize=7)
         self.right_figure.tight_layout()
+        self._connect_right_hover()
         self.right_canvas.draw()
 
 
