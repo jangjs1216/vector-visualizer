@@ -529,6 +529,12 @@ class VectorDistanceSimulator:
         self.leave_cid = None
         self.click_cid = None
 
+        # Image preview window (reused)
+        self._preview_win = None
+        self._preview_img_label = None
+        self._preview_meta_label = None
+        self._preview_tk_img = None
+
         # ── Time-series mode state ──
         self._mode_var = tk.StringVar(value="normal")  # "normal" or "timeseries"
         self._ts_color_vars: dict[str, tk.BooleanVar] = {
@@ -1054,7 +1060,7 @@ class VectorDistanceSimulator:
             self._open_image(row)
 
     def _open_image(self, row) -> None:
-        """Open an image file in a new window with metadata."""
+        """Open/update a reusable image preview window."""
         path = str(row["path"])
         if not os.path.isfile(path):
             from tkinter import messagebox
@@ -1077,14 +1083,8 @@ class VectorDistanceSimulator:
             ratio = min(max_size / w, max_size / h)
             img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
 
-        win = tk.Toplevel(self.root)
-        win.title(os.path.basename(path))
-        win.geometry(f"{img.size[0]+20}x{img.size[1]+100}")
-
         tk_img = ImageTk.PhotoImage(img)
-        label = tk.Label(win, image=tk_img)
-        label.image = tk_img  # prevent GC
-        label.pack(padx=5, pady=5)
+        self._preview_tk_img = tk_img  # prevent GC
 
         meta_text = (
             f"path  : {path}\n"
@@ -1092,8 +1092,28 @@ class VectorDistanceSimulator:
             f"side  : {row['side']}\n"
             f"color : {row['color']}"
         )
-        tk.Label(win, text=meta_text, font=("Consolas", 9), fg="#444444",
-                 justify="left", anchor="w").pack(fill=tk.X, padx=10, pady=(0, 8))
+
+        # Reuse existing window or create new one
+        if self._preview_win is not None and self._preview_win.winfo_exists():
+            self._preview_win.title(os.path.basename(path))
+            self._preview_win.geometry(f"{img.size[0]+20}x{img.size[1]+100}")
+            self._preview_img_label.config(image=tk_img)
+            self._preview_meta_label.config(text=meta_text)
+            self._preview_win.lift()
+        else:
+            win = tk.Toplevel(self.root)
+            win.title(os.path.basename(path))
+            win.geometry(f"{img.size[0]+20}x{img.size[1]+100}")
+
+            self._preview_img_label = tk.Label(win, image=tk_img)
+            self._preview_img_label.pack(padx=5, pady=5)
+
+            self._preview_meta_label = tk.Label(
+                win, text=meta_text, font=("Consolas", 9), fg="#444444",
+                justify="left", anchor="w",
+            )
+            self._preview_meta_label.pack(fill=tk.X, padx=10, pady=(0, 8))
+            self._preview_win = win
 
     def _on_leave_left(self, _):
         self._hide_annotation()
