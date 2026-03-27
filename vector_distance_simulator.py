@@ -453,12 +453,12 @@ BUFFER_STRATEGIES = {
 }
 
 TS_COMMON_PARAMS = {
-    "buffer_size": {"label": "Buffer Size (N)", "default": 256, "min": 16, "max": 5000, "type": "int"},
-    "max_age_days": {"label": "Max Age Days (K)", "default": 30, "min": 1, "max": 365, "type": "int"},
-    "region_count": {"label": "Region Count", "default": 8, "min": 1, "max": 64, "type": "int"},
-    "distance_threshold": {"label": "Cosine Dist Threshold", "default": 0.02, "min": 0.0, "max": 2.0, "type": "float"},
-    "density_knn_k": {"label": "Density KNN K", "default": 5, "min": 1, "max": 32, "type": "int"},
-    "density_alpha": {"label": "Density Alpha", "default": 1.30, "min": 1.0, "max": 5.0, "type": "float"},
+    "buffer_size": {"label": "Buffer Size (N)", "default": 750, "min": 16, "max": 5000, "type": "int"},
+    "max_age_days": {"label": "Max Age Days (K)", "default": 360, "min": 1, "max": 365, "type": "int"},
+    "region_count": {"label": "Region Count", "default": 15, "min": 1, "max": 64, "type": "int"},
+    "distance_threshold": {"label": "Cosine Dist Threshold", "default": 0.001, "min": 0.0, "max": 2.0, "type": "float"},
+    "density_knn_k": {"label": "Density KNN K", "default": 15, "min": 1, "max": 32, "type": "int"},
+    "density_alpha": {"label": "Density Alpha", "default": 1.3, "min": 1.0, "max": 5.0, "type": "float"},
 }
 
 TS_METRIC_HELP = {
