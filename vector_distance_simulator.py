@@ -1343,7 +1343,7 @@ class VectorDistanceSimulator:
 
         if self._show_right_bg_var.get():
             for sc_obj, gdf, _ in self.left_scatter_lookup:
-                bg_kw = dict(s=self.style.point_size * 0.5, c=[(0.75, 0.75, 0.75, 0.15)])
+                bg_kw = dict(s=self.style.point_size * 0.5, c=[(1.0, 0.0, 0.0, 0.15)], label="Original Background")
                 if is_3d:
                     ax.scatter(gdf["C1"], gdf["C2"], gdf["C3"], depthshade=True, **bg_kw)
                 else:
@@ -1388,7 +1388,10 @@ class VectorDistanceSimulator:
             except Exception:
                 continue
 
-            color = DATASET_COLORS[idx % len(DATASET_COLORS)]
+            if self._show_right_bg_var.get():
+                color = "blue"
+            else:
+                color = DATASET_COLORS[idx % len(DATASET_COLORS)]
             n_pts = len(accepted_df)
             total_points += n_pts
 
@@ -1857,7 +1860,7 @@ class VectorDistanceSimulator:
         color_df["C3"] = emb[:, 2] if n_dim >= 3 else 0.0
 
         if self._show_right_bg_var.get():
-            bg_kw = dict(s=self.style.point_size * 0.5, c=[(0.75, 0.75, 0.75, 0.15)])
+            bg_kw = dict(s=self.style.point_size * 0.5, c=[(1.0, 0.0, 0.0, 0.15)], label="Original Background")
             if is_3d:
                 ax.scatter(color_df["C1"], color_df["C2"], color_df["C3"], depthshade=True, **bg_kw)
             else:
@@ -1888,10 +1891,10 @@ class VectorDistanceSimulator:
                     continue
                 total_shown += len(acc_df)
                 if i < rd_idx:
-                    kw = dict(s=self.style.point_size * 0.7, alpha=0.2,
-                             c=[(0.5, 0.5, 0.5, 0.3)])
+                    c_prev = (0.0, 0.0, 1.0, 0.3) if self._show_right_bg_var.get() else (0.5, 0.5, 0.5, 0.3)
+                    kw = dict(s=self.style.point_size * 0.7, alpha=0.2, c=[c_prev])
                 else:
-                    c = cmap(i / max(n_dates - 1, 1))
+                    c = "blue" if self._show_right_bg_var.get() else cmap(i / max(n_dates - 1, 1))
                     kw = dict(s=self.style.point_size * 1.3, alpha=0.9, c=[c],
                              label=f"{date}: {info['accepted']}/{info['total']} ({info['rate']:.0%})",
                              edgecolors="white", linewidths=0.5, picker=True)
@@ -1917,7 +1920,7 @@ class VectorDistanceSimulator:
                 if len(acc_df) == 0:
                     continue
                 total_accepted += len(acc_df)
-                c = cmap(i / max(n_dates - 1, 1))
+                c = "blue" if self._show_right_bg_var.get() else cmap(i / max(n_dates - 1, 1))
                 lab = f"{date}: {info['accepted']}/{info['total']} ({info['rate']:.0%})"
                 kw = dict(s=self.style.point_size * 1.2, alpha=0.8, c=[c], label=lab,
                          edgecolors="white", linewidths=0.3, picker=True)
