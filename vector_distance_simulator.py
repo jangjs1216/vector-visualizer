@@ -1094,7 +1094,9 @@ class VectorDistanceSimulator:
         )
 
         # Reuse existing window or create new one
-        if self._preview_win is not None and self._preview_win.winfo_exists():
+        existing = self._preview_win is not None and self._preview_win.winfo_exists()
+        print(f"[PREVIEW] _preview_win={self._preview_win}, exists={existing}")
+        if existing:
             self._preview_win.title(os.path.basename(path))
             self._preview_win.geometry(f"{img.size[0]+20}x{img.size[1]+100}")
             self._preview_img_label.config(image=tk_img)
