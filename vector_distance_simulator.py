@@ -621,6 +621,7 @@ class VectorDistanceSimulator:
         self._ts_results: list[dict] = []
         self._ts_selected_result_idx: int | None = None
         self._ts_compare_tree: ttk.Treeview | None = None
+        self._ts_date_tree: ttk.Treeview | None = None
         self._ts_date_label_var = tk.StringVar(value="")
         self._ts_metrics_var = tk.StringVar(value="")
         self._ts_right_mode_var = tk.StringVar(value="step")
@@ -1626,10 +1627,10 @@ class VectorDistanceSimulator:
         rv_box.pack(fill=tk.X, pady=(0, 8))
         ttk.Radiobutton(rv_box, text="Current Buffer Snapshot", value="step",
                         variable=self._ts_right_mode_var,
-                        command=self._ts_draw_right).pack(anchor="w")
+                        command=self._on_ts_right_mode_change).pack(anchor="w")
         ttk.Radiobutton(rv_box, text="Buffer Evolution", value="all",
                         variable=self._ts_right_mode_var,
-                        command=self._ts_draw_right).pack(anchor="w")
+                        command=self._on_ts_right_mode_change).pack(anchor="w")
         rv_nav = ttk.Frame(rv_box)
         rv_nav.pack(fill=tk.X, pady=(4, 0))
         ttk.Button(rv_nav, text="◀", width=4, command=self._ts_right_prev).pack(side=tk.LEFT, padx=2)
@@ -1639,6 +1640,32 @@ class VectorDistanceSimulator:
         ttk.Checkbutton(rv_box, text="Show Mother Background Overlay",
                         variable=self._show_right_bg_var,
                         command=self._ts_draw_right).pack(anchor="w", pady=(6, 0))
+
+        date_box = ttk.LabelFrame(tp, text="🗓 Date Snapshot Table", padding=8)
+        date_box.pack(fill=tk.X, pady=(0, 8))
+        date_cols = ("date", "buf", "track", "match", "cover", "age")
+        self._ts_date_tree = ttk.Treeview(date_box, columns=date_cols, show="headings", height=6, selectmode="browse")
+        date_heads = {
+            "date": "Date",
+            "buf": "Buffer",
+            "track": "Track",
+            "match": "Match",
+            "cover": "Cover",
+            "age": "AvgAge",
+        }
+        date_widths = {
+            "date": 88,
+            "buf": 48,
+            "track": 52,
+            "match": 52,
+            "cover": 52,
+            "age": 58,
+        }
+        for col in date_cols:
+            self._ts_date_tree.heading(col, text=date_heads[col])
+            self._ts_date_tree.column(col, width=date_widths[col], anchor="center", stretch=(col == "date"))
+        self._ts_date_tree.pack(fill=tk.X)
+        self._ts_date_tree.bind("<<TreeviewSelect>>", self._on_ts_date_select)
 
         metrics_box = ttk.LabelFrame(tp, text="📊 Selected Strategy Summary", padding=8)
         metrics_box.pack(fill=tk.X, pady=(0, 8))
@@ -1721,6 +1748,7 @@ class VectorDistanceSimulator:
             self._ts_right_date_label_var.set(
                 f"{current_date}  ({self._ts_right_date_idx + 1}/{len(per_date)})"
             )
+        self._refresh_ts_date_table()
         self._ts_metrics_var.set(self._format_ts_result_summary(self._ts_sim_result))
         self._ts_draw_right()
 
@@ -1733,6 +1761,8 @@ class VectorDistanceSimulator:
         self._ts_right_date_label_var.set("")
         if self._ts_compare_tree is not None:
             self._ts_compare_tree.delete(*self._ts_compare_tree.get_children())
+        if self._ts_date_tree is not None:
+            self._ts_date_tree.delete(*self._ts_date_tree.get_children())
         self._ts_draw_right()
 
     def _format_ts_result_summary(self, result: dict) -> str:
@@ -1757,6 +1787,46 @@ class VectorDistanceSimulator:
                 f"{date:<10} {len(info['buffer_indices']):>4} {info['tracking_score']:>6.1f} {info['match_score']:>6.1f}"
             )
         return "\n".join(lines)
+
+    def _refresh_ts_date_table(self) -> None:
+        if self._ts_date_tree is None:
+            return
+        self._ts_date_tree.delete(*self._ts_date_tree.get_children())
+        if not self._ts_sim_result:
+            return
+        for idx, (date, info) in enumerate(self._ts_sim_result["per_date"].items()):
+            self._ts_date_tree.insert(
+                "", "end", iid=str(idx),
+                values=(
+                    date,
+                    len(info["buffer_indices"]),
+                    f"{info['tracking_score']:.1f}",
+                    f"{info['match_score']:.1f}",
+                    f"{info['coverage_score']:.1f}",
+                    f"{info['avg_age_days']:.1f}",
+                ),
+            )
+        current_idx = min(self._ts_right_date_idx, len(self._ts_sim_result["per_date"]) - 1)
+        self._ts_date_tree.selection_set(str(current_idx))
+
+    def _on_ts_date_select(self, _event=None) -> None:
+        if self._ts_date_tree is None or not self._ts_sim_result:
+            return
+        selected = self._ts_date_tree.selection()
+        if not selected:
+            return
+        self._ts_right_date_idx = int(selected[0])
+        dates = list(self._ts_sim_result["per_date"].keys())
+        if dates:
+            date = dates[self._ts_right_date_idx]
+            self._ts_right_date_label_var.set(f"{date}  ({self._ts_right_date_idx + 1}/{len(dates)})")
+        if self._ts_date_tree is not None and self._ts_date_tree.exists(str(self._ts_right_date_idx)):
+            self._ts_date_tree.selection_set(str(self._ts_right_date_idx))
+        self._ts_draw_right()
+
+    def _on_ts_right_mode_change(self) -> None:
+        self._refresh_ts_date_table()
+        self._ts_draw_right()
 
     # ── Mode switching ────────────────────────────────────────
 
@@ -1868,6 +1938,8 @@ class VectorDistanceSimulator:
         self._ts_right_date_idx = max(0, self._ts_right_date_idx - 1)
         date = dates[self._ts_right_date_idx]
         self._ts_right_date_label_var.set(f"{date}  ({self._ts_right_date_idx + 1}/{len(dates)})")
+        if self._ts_date_tree is not None and self._ts_date_tree.exists(str(self._ts_right_date_idx)):
+            self._ts_date_tree.selection_set(str(self._ts_right_date_idx))
         self._ts_draw_right()
 
     def _ts_right_next(self) -> None:
@@ -1879,6 +1951,8 @@ class VectorDistanceSimulator:
         self._ts_right_date_idx = min(len(dates) - 1, self._ts_right_date_idx + 1)
         date = dates[self._ts_right_date_idx]
         self._ts_right_date_label_var.set(f"{date}  ({self._ts_right_date_idx + 1}/{len(dates)})")
+        if self._ts_date_tree is not None and self._ts_date_tree.exists(str(self._ts_right_date_idx)):
+            self._ts_date_tree.selection_set(str(self._ts_right_date_idx))
         self._ts_draw_right()
 
     def _get_selected_colors(self) -> set[str]:
@@ -2098,32 +2172,28 @@ class VectorDistanceSimulator:
                 fontsize=11, pad=12,
             )
         else:
-            mid_idx = len(items) // 2
-            for i, (date, snap) in enumerate(items):
-                buffer_df = color_df[color_df.index.isin(snap["buffer_indices"])]
-                if len(buffer_df) == 0:
-                    continue
+            idx = min(self._ts_right_date_idx, len(items) - 1)
+            date, snap = items[idx]
+            buffer_df = color_df[color_df.index.isin(snap["buffer_indices"])]
+            if len(buffer_df) > 0:
                 buffer_df = buffer_df.reset_index(drop=True)
-                c = "blue" if self._show_right_bg_var.get() else cmap(i / max(len(items) - 1, 1))
-                label = None
-                if i in {0, mid_idx, len(items) - 1}:
-                    label = f"{date} ({len(buffer_df)})"
-                alpha = 0.12 if i < len(items) - 1 else 0.88
-                size = self.style.point_size * (0.55 if i < len(items) - 1 else 1.3)
-                kw = dict(s=size, alpha=alpha, c=[c], picker=(i == len(items) - 1))
-                if label is not None:
-                    kw["label"] = label
-                if i == len(items) - 1:
-                    kw["edgecolors"] = "white"
-                    kw["linewidths"] = 0.4
+                c = "blue" if self._show_right_bg_var.get() else DATASET_COLORS[0]
+                kw = dict(
+                    s=self.style.point_size * 1.3,
+                    alpha=0.9,
+                    c=[c],
+                    label=f"{date} ({len(buffer_df)})",
+                    edgecolors="white",
+                    linewidths=0.5,
+                    picker=True,
+                )
                 if is_3d:
                     sc = ax.scatter(buffer_df["C1"], buffer_df["C2"], buffer_df["C3"], depthshade=True, **kw)
                 else:
                     sc = ax.scatter(buffer_df["C1"], buffer_df["C2"], **kw)
-                if i == len(items) - 1:
-                    self.right_scatter_lookup.append((sc, buffer_df, is_3d))
+                self.right_scatter_lookup.append((sc, buffer_df, is_3d))
             ax.set_title(
-                f"Selected: {result['strategy']} | Buffer Evolution | Avg Track {result['mean_tracking_score']:.1f}",
+                f"Selected: {result['strategy']} | Evolution Date: {date} | Buffer {len(snap['buffer_indices'])} | Track {snap['tracking_score']:.1f} | Match {snap['match_score']:.1f}",
                 fontsize=11, pad=12,
             )
 
