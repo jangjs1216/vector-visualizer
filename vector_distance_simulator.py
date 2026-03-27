@@ -1343,7 +1343,12 @@ class VectorDistanceSimulator:
 
         if self._show_right_bg_var.get():
             for sc_obj, gdf, _ in self.left_scatter_lookup:
-                bg_kw = dict(s=self.style.point_size * 0.5, alpha=0.15, c=[(0.7, 0.7, 0.7, 0.2)])
+                try:
+                    fc = sc_obj.get_facecolor()[0]
+                    bg_c = (fc[0], fc[1], fc[2], 0.15)
+                except Exception:
+                    bg_c = (0.7, 0.7, 0.7, 0.15)
+                bg_kw = dict(s=self.style.point_size * 0.5, c=[bg_c])
                 if is_3d:
                     ax.scatter(gdf["C1"], gdf["C2"], gdf["C3"], depthshade=True, **bg_kw)
                 else:
@@ -1857,11 +1862,17 @@ class VectorDistanceSimulator:
         color_df["C3"] = emb[:, 2] if n_dim >= 3 else 0.0
 
         if self._show_right_bg_var.get():
-            bg_kw = dict(s=self.style.point_size * 0.5, alpha=0.15, c=[(0.7, 0.7, 0.7, 0.2)])
-            if is_3d:
-                ax.scatter(color_df["C1"], color_df["C2"], color_df["C3"], depthshade=True, **bg_kw)
-            else:
-                ax.scatter(color_df["C1"], color_df["C2"], **bg_kw)
+            mode = self.color_mode_var.get()
+            group_col = "color" if mode == "color" else "side"
+            palette = self.color_palette if mode == "color" else self.side_palette
+            for gval, g_df in color_df.groupby(group_col):
+                c = palette.get(str(gval), (0.7, 0.7, 0.7, 1.0))
+                bg_c = (c[0], c[1], c[2], 0.15)
+                bg_kw = dict(s=self.style.point_size * 0.5, c=[bg_c])
+                if is_3d:
+                    ax.scatter(g_df["C1"], g_df["C2"], g_df["C3"], depthshade=True, **bg_kw)
+                else:
+                    ax.scatter(g_df["C1"], g_df["C2"], **bg_kw)
 
         sim = self._ts_sim_result
         right_mode = self._ts_right_mode_var.get()
