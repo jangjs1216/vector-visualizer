@@ -559,6 +559,8 @@ class VectorDistanceSimulator:
         self._ts_right_date_idx: int = 0
         self._ts_right_date_label_var = tk.StringVar(value="")
 
+        self._show_right_bg_var = tk.BooleanVar(value=True)
+
         self._build_ui()
         self._bind_filter_events()
         self._update_strategy_params()
@@ -719,6 +721,10 @@ class VectorDistanceSimulator:
             sim_box, text="▶ Simulate", command=self._run_simulation
         )
         self._sim_button.pack(fill=tk.X, pady=(0, 4))
+        
+        ttk.Checkbutton(sim_box, text="Show Original Background",
+                        variable=self._show_right_bg_var,
+                        command=self._redraw_right_view).pack(anchor="w", pady=(2, 6))
 
         ttk.Label(sim_box, textvariable=self.sim_status_var, wraplength=290,
                   justify="left", foreground="gray").pack(anchor="w")
@@ -1335,6 +1341,14 @@ class VectorDistanceSimulator:
         if is_3d:
             ax.set_zlabel("C3")
 
+        if self._show_right_bg_var.get():
+            for sc_obj, gdf, _ in self.left_scatter_lookup:
+                bg_kw = dict(s=self.style.point_size * 0.5, alpha=0.15, c=[(0.7, 0.7, 0.7, 0.2)])
+                if is_3d:
+                    ax.scatter(gdf["C1"], gdf["C2"], gdf["C3"], depthshade=True, **bg_kw)
+                else:
+                    ax.scatter(gdf["C1"], gdf["C2"], **bg_kw)
+
         # Collect checked datasets
         active_datasets: list[tuple[SimulationResult, int]] = []
         for i, result in enumerate(self._sim_results):
@@ -1509,6 +1523,10 @@ class VectorDistanceSimulator:
         ttk.Label(rv_nav, textvariable=self._ts_right_date_label_var,
                   font=("Consolas", 9), anchor="center").pack(side=tk.LEFT, expand=True, fill=tk.X)
         ttk.Button(rv_nav, text="▶", width=4, command=self._ts_right_next).pack(side=tk.RIGHT, padx=2)
+
+        ttk.Checkbutton(rv_box, text="Show Original Background",
+                        variable=self._show_right_bg_var,
+                        command=self._ts_draw_right).pack(anchor="w", pady=(6, 0))
 
         # Metrics
         metrics_box = ttk.LabelFrame(tp, text="📊 Tracking Metrics", padding=8)
@@ -1799,6 +1817,7 @@ class VectorDistanceSimulator:
         method = self.method_var.get()
 
         self.right_ax = self.right_figure.add_subplot(111, projection="3d" if is_3d else None)
+        self.right_scatter_lookup = []
         ax = self.right_ax
         ax.set_xlabel("C1"); ax.set_ylabel("C2")
         if is_3d:
@@ -1837,6 +1856,13 @@ class VectorDistanceSimulator:
         color_df["C2"] = emb[:, 1]
         color_df["C3"] = emb[:, 2] if n_dim >= 3 else 0.0
 
+        if self._show_right_bg_var.get():
+            bg_kw = dict(s=self.style.point_size * 0.5, alpha=0.15, c=[(0.7, 0.7, 0.7, 0.2)])
+            if is_3d:
+                ax.scatter(color_df["C1"], color_df["C2"], color_df["C3"], depthshade=True, **bg_kw)
+            else:
+                ax.scatter(color_df["C1"], color_df["C2"], **bg_kw)
+
         sim = self._ts_sim_result
         right_mode = self._ts_right_mode_var.get()
         cmap = plt.get_cmap("coolwarm")
@@ -1868,11 +1894,14 @@ class VectorDistanceSimulator:
                     c = cmap(i / max(n_dates - 1, 1))
                     kw = dict(s=self.style.point_size * 1.3, alpha=0.9, c=[c],
                              label=f"{date}: {info['accepted']}/{info['total']} ({info['rate']:.0%})",
-                             edgecolors="white", linewidths=0.5)
+                             edgecolors="white", linewidths=0.5, picker=True)
                 if is_3d:
-                    ax.scatter(acc_df["C1"], acc_df["C2"], acc_df["C3"], depthshade=True, **kw)
+                    sc = ax.scatter(acc_df["C1"], acc_df["C2"], acc_df["C3"], depthshade=True, **kw)
                 else:
-                    ax.scatter(acc_df["C1"], acc_df["C2"], **kw)
+                    sc = ax.scatter(acc_df["C1"], acc_df["C2"], **kw)
+                
+                if i == rd_idx:
+                    self.right_scatter_lookup.append((sc, acc_df, is_3d))
 
             ax.set_title(f"Sim Step: {current_rd} ({total_shown} pts)",
                          fontsize=11, pad=12)
@@ -1891,11 +1920,13 @@ class VectorDistanceSimulator:
                 c = cmap(i / max(n_dates - 1, 1))
                 lab = f"{date}: {info['accepted']}/{info['total']} ({info['rate']:.0%})"
                 kw = dict(s=self.style.point_size * 1.2, alpha=0.8, c=[c], label=lab,
-                         edgecolors="white", linewidths=0.3)
+                         edgecolors="white", linewidths=0.3, picker=True)
                 if is_3d:
-                    ax.scatter(acc_df["C1"], acc_df["C2"], acc_df["C3"], depthshade=True, **kw)
+                    sc = ax.scatter(acc_df["C1"], acc_df["C2"], acc_df["C3"], depthshade=True, **kw)
                 else:
-                    ax.scatter(acc_df["C1"], acc_df["C2"], **kw)
+                    sc = ax.scatter(acc_df["C1"], acc_df["C2"], **kw)
+                
+                self.right_scatter_lookup.append((sc, acc_df, is_3d))
 
             strat = sim.get("strategy", "")
             ax.set_title(f"Sim [{strat}]: {total_accepted} accepted",
@@ -1904,6 +1935,7 @@ class VectorDistanceSimulator:
         ax.grid(True, alpha=0.25)
         ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0, fontsize=7)
         self.right_figure.tight_layout()
+        self._connect_right_hover()
         self.right_canvas.draw()
 
     # ── Time-series simulation ────────────────────────────────
