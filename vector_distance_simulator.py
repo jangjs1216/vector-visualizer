@@ -2216,6 +2216,7 @@ class VectorDistanceSimulator:
             cur_set = set(view["buffer_indices"])
             kept_df = color_df[color_df.index.isin(prev_set & cur_set)]
             added_df = color_df[color_df.index.isin(cur_set - prev_set)]
+            dropped_df = color_df[color_df.index.isin(prev_set - cur_set)]
             if len(kept_df) > 0:
                 kept_df = kept_df.reset_index(drop=True)
                 kw = dict(s=self.style.point_size * 1.15, alpha=0.72, c=[(0.216, 0.494, 0.722, 0.75)], label=f"Retained ({len(kept_df)})", picker=True)
@@ -2232,6 +2233,14 @@ class VectorDistanceSimulator:
                 else:
                     sc = ax.scatter(added_df["C1"], added_df["C2"], **kw)
                 self.right_scatter_lookup.append((sc, added_df, is_3d))
+            if len(dropped_df) > 0:
+                dropped_df = dropped_df.reset_index(drop=True)
+                kw = dict(s=self.style.point_size * 1.55, alpha=0.95, c=[(0.839, 0.153, 0.157, 0.92)], label=f"Dropped ({len(dropped_df)})", marker="x", linewidths=1.0, picker=True)
+                if is_3d:
+                    sc = ax.scatter(dropped_df["C1"], dropped_df["C2"], dropped_df["C3"], depthshade=False, **kw)
+                else:
+                    sc = ax.scatter(dropped_df["C1"], dropped_df["C2"], **kw)
+                self.right_scatter_lookup.append((sc, dropped_df, is_3d))
         else:
             if len(buffer_df) > 0:
                 buffer_df = buffer_df.reset_index(drop=True)
