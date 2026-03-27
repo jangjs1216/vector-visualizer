@@ -1017,14 +1017,23 @@ class VectorDistanceSimulator:
 
     def _on_click_left(self, event):
         """Click on a point to open image preview."""
-        if self.left_ax is None or event.inaxes != self.left_ax:
+        print(f"[DEBUG] _on_click_left called: button={event.button}, inaxes={event.inaxes}, left_ax={self.left_ax}")
+        print(f"[DEBUG] scatter_lookup len={len(self.left_scatter_lookup)}")
+        if self.left_ax is None or event.inaxes is None:
+            print("[DEBUG] early return: left_ax or inaxes is None")
             return
-        for scatter, gdf, _ in self.left_scatter_lookup:
+        if event.inaxes != self.left_ax:
+            print(f"[DEBUG] early return: inaxes mismatch {event.inaxes} != {self.left_ax}")
+            return
+        for i, (scatter, gdf, _) in enumerate(self.left_scatter_lookup):
             ok, info = scatter.contains(event)
+            print(f"[DEBUG] scatter[{i}] contains={ok}, info={info}, gdf_len={len(gdf)}")
             if ok and info.get("ind", []):
                 row = gdf.iloc[int(info["ind"][0])]
+                print(f"[DEBUG] opening image for: {row.get('path', 'NO_PATH')}")
                 self._open_image(row)
                 return
+        print("[DEBUG] no scatter hit")
 
     def _open_image(self, row) -> None:
         """Open an image file in a new window with metadata."""
