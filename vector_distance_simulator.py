@@ -527,6 +527,7 @@ class VectorDistanceSimulator:
         self.annotation = None
         self.hover_cid = None
         self.leave_cid = None
+        self.click_cid = None
 
         # ── Time-series mode state ──
         self._mode_var = tk.StringVar(value="normal")  # "normal" or "timeseries"
@@ -1014,6 +1015,59 @@ class VectorDistanceSimulator:
                 return
         self._hide_annotation()
 
+    def _on_click_left(self, event):
+        """Click on a point to open image preview."""
+        if self.left_ax is None or event.inaxes != self.left_ax:
+            return
+        for scatter, gdf, _ in self.left_scatter_lookup:
+            ok, info = scatter.contains(event)
+            if ok and info.get("ind", []):
+                row = gdf.iloc[int(info["ind"][0])]
+                self._open_image(row)
+                return
+
+    def _open_image(self, row) -> None:
+        """Open an image file in a new window with metadata."""
+        path = str(row["path"])
+        if not os.path.isfile(path):
+            from tkinter import messagebox
+            messagebox.showinfo("File not found", f"Image file not found:\n{path}")
+            return
+        if not HAS_PIL:
+            from tkinter import messagebox
+            messagebox.showinfo("Pillow missing", f"Install Pillow to view images:\npip install Pillow\n\nPath: {path}")
+            return
+        try:
+            img = Image.open(path)
+        except Exception as exc:
+            from tkinter import messagebox
+            messagebox.showerror("Image error", f"Cannot open image:\n{path}\n\n{exc}")
+            return
+
+        max_size = 800
+        w, h = img.size
+        if w > max_size or h > max_size:
+            ratio = min(max_size / w, max_size / h)
+            img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+
+        win = tk.Toplevel(self.root)
+        win.title(os.path.basename(path))
+        win.geometry(f"{img.size[0]+20}x{img.size[1]+100}")
+
+        tk_img = ImageTk.PhotoImage(img)
+        label = tk.Label(win, image=tk_img)
+        label.image = tk_img  # prevent GC
+        label.pack(padx=5, pady=5)
+
+        meta_text = (
+            f"path  : {path}\n"
+            f"type  : {row['type']}\n"
+            f"side  : {row['side']}\n"
+            f"color : {row['color']}"
+        )
+        tk.Label(win, text=meta_text, font=("Consolas", 9), fg="#444444",
+                 justify="left", anchor="w").pack(fill=tk.X, padx=10, pady=(0, 8))
+
     def _on_leave_left(self, _):
         self._hide_annotation()
 
@@ -1022,8 +1076,11 @@ class VectorDistanceSimulator:
             self.left_canvas.mpl_disconnect(self.hover_cid)
         if self.leave_cid is not None:
             self.left_canvas.mpl_disconnect(self.leave_cid)
+        if self.click_cid is not None:
+            self.left_canvas.mpl_disconnect(self.click_cid)
         self.hover_cid = self.left_canvas.mpl_connect("motion_notify_event", self._on_hover_left)
         self.leave_cid = self.left_canvas.mpl_connect("figure_leave_event", self._on_leave_left)
+        self.click_cid = self.left_canvas.mpl_connect("button_press_event", self._on_click_left)
 
     # ── Redraw (core method) ─────────────────────────────────
 
