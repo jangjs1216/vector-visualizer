@@ -444,6 +444,9 @@ BUFFER_STRATEGIES = {
     "Quota-First FIFO": {
         "desc": "Mother 분포의 영역별 비율을 먼저 맞추고, 같은 영역 안의 과도한 중복만 distance threshold로 줄이는 추천 전략입니다.",
     },
+    "Stable Coverage Memory": {
+        "desc": "가장 가까운 기존 샘플과의 거리만으로 빈 공간을 채우는 안정형 메모리입니다. 이미 본 이미지는 유지하고, 비어 있는 영역만 추가로 채우는 현재 목적에 가장 가깝습니다.",
+    },
 }
 
 TS_COMMON_PARAMS = {
@@ -615,7 +618,7 @@ class VectorDistanceSimulator:
         self._ts_date_idx: int = 0
         self._ts_view_mode_var = tk.StringVar(value="step")
         self._ts_show_prev_var = tk.BooleanVar(value=True)
-        self._ts_strategy_var = tk.StringVar(value="Quota-First FIFO")
+        self._ts_strategy_var = tk.StringVar(value="Stable Coverage Memory")
         self._ts_strategy_desc_var = tk.StringVar(value="")
         self._ts_param_entries: dict[str, tk.StringVar] = {}
         self._ts_param_widgets: list[tk.Widget] = []
@@ -1583,6 +1586,10 @@ class VectorDistanceSimulator:
         self._ts_param_frame = ttk.Frame(sim_box)
         self._ts_param_frame.pack(fill=tk.X, pady=(0, 6))
 
+        thr_row = ttk.Frame(sim_box)
+        thr_row.pack(fill=tk.X, pady=(0, 6))
+        ttk.Button(thr_row, text="Estimate Threshold For N", command=self._ts_estimate_threshold_for_target).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
         btn_row = ttk.Frame(sim_box)
         btn_row.pack(fill=tk.X, pady=(0, 4))
         self._ts_sim_button = ttk.Button(btn_row, text="Run Selected", command=self._ts_run_selected_strategy)
@@ -1608,7 +1615,7 @@ class VectorDistanceSimulator:
             "nn": "MeanNN",
         }
         widths = {
-            "strategy": 118,
+            "strategy": 168,
             "track": 52,
             "match": 52,
             "coverage": 52,
@@ -2310,6 +2317,8 @@ class VectorDistanceSimulator:
         mother_nn = float(context.get("mother_mean_nn", 0.0))
         if strategy_name == "Distance Gate FIFO":
             adaptive = max(0.005, mother_nn * 0.35)
+        elif strategy_name == "Stable Coverage Memory":
+            adaptive = max(0.004, mother_nn * 0.45)
         else:
             adaptive = max(0.003, mother_nn * 0.20)
         return float(min(base, adaptive) if base > 0 else adaptive)
@@ -2337,6 +2346,11 @@ class VectorDistanceSimulator:
         if strategy_name == "Distance Gate FIFO":
             warmup_target = min(context["capacity"], max(8, context["region_count"] * 2))
             threshold = effective_threshold * (0.5 if len(buffer) < warmup_target else 1.0)
+            return np.isinf(global_min) or global_min >= threshold
+
+        if strategy_name == "Stable Coverage Memory":
+            warmup_target = min(context["capacity"], max(16, context["region_count"] * 3))
+            threshold = effective_threshold * (0.45 if len(buffer) < warmup_target else 1.0)
             return np.isinf(global_min) or global_min >= threshold
 
         region = int(context["cluster_labels"][pos])
@@ -2370,13 +2384,15 @@ class VectorDistanceSimulator:
         context: dict,
         current_value: pd.Timestamp | int,
     ) -> int:
-        if strategy_name in {"FIFO Baseline", "Distance Gate FIFO"} or len(buffer) <= 1:
+        if strategy_name == "FIFO Baseline" or len(buffer) <= 1:
             return 0
 
         quotas = context["quotas"]
         normalized = context["normalized"]
         over_quota = np.maximum(cluster_counts - quotas, 0)
         must_reduce_regions = {i for i, v in enumerate(over_quota) if v > 0}
+        if strategy_name == "Stable Coverage Memory":
+            must_reduce_regions = set()
 
         best_idx = 0
         best_score = -float("inf")
@@ -2389,7 +2405,12 @@ class VectorDistanceSimulator:
             min_dist = self._ts_min_cosine_distance(normalized, entry.pos, peers)
             redundancy = 0.0 if np.isinf(min_dist) else max(0.0, 1.0 - min_dist)
             age = self._ts_age_days(current_value, entry.time_value)
-            score = float(over_quota[entry.region]) * 1000.0 + redundancy * 100.0 + age
+            if strategy_name == "Stable Coverage Memory":
+                score = redundancy * 100.0 + age
+            elif strategy_name == "Distance Gate FIFO":
+                score = redundancy * 50.0 + age
+            else:
+                score = float(over_quota[entry.region]) * 1000.0 + redundancy * 100.0 + age
             if score > best_score:
                 best_score = score
                 best_idx = i
@@ -2694,6 +2715,61 @@ class VectorDistanceSimulator:
 
     def _ts_run_all_strategies(self) -> None:
         self._ts_start_worker(list(BUFFER_STRATEGIES.keys()), replace_all=True)
+
+    def _ts_result_final_buffer_size(self, result: dict) -> int:
+        per_date = result.get("per_date", {})
+        if not per_date:
+            return 0
+        last = next(reversed(per_date.values()))
+        return len(last.get("buffer_indices", []))
+
+    def _ts_estimate_threshold_for_target(self) -> None:
+        strategy_name = self._ts_strategy_var.get()
+        if strategy_name == "FIFO Baseline":
+            self.status_var.set("FIFO Baseline은 threshold를 사용하지 않습니다.")
+            return
+        if self._ts_worker_thread is not None and self._ts_worker_thread.is_alive():
+            self.status_var.set("시뮬레이션 실행 중에는 threshold를 추정할 수 없습니다.")
+            return
+        if not self._ts_dates:
+            self.status_var.set("날짜 데이터가 없습니다.")
+            return
+
+        params = self._get_ts_strategy_params()
+        context = self._prepare_ts_simulation_context(params)
+        if context is None:
+            self.status_var.set("Threshold 추정을 위한 데이터가 부족합니다.")
+            return
+
+        target_n = int(params["buffer_size"])
+        lo = 0.0
+        hi = max(0.05, float(context.get("mother_mean_nn", 0.01)) * 4.0, float(params["distance_threshold"]) * 2.0)
+        best_thr = hi
+        best_gap = float("inf")
+        best_count = 0
+
+        self.status_var.set(f"Estimating threshold for N={target_n}...")
+        self.root.update_idletasks()
+
+        for _ in range(12):
+            mid = (lo + hi) / 2.0
+            trial = params.copy()
+            trial["distance_threshold"] = mid
+            result = self._ts_simulate_strategy(strategy_name, trial, context)
+            count = self._ts_result_final_buffer_size(result)
+            gap = abs(count - target_n)
+            if gap < best_gap:
+                best_gap = gap
+                best_thr = mid
+                best_count = count
+            if count > target_n:
+                lo = mid
+            else:
+                hi = mid
+
+        if "distance_threshold" in self._ts_param_entries:
+            self._ts_param_entries["distance_threshold"].set(f"{best_thr:.4f}")
+        self.status_var.set(f"Estimated threshold {best_thr:.4f} for target N={target_n} | predicted final buffer {best_count}")
 
     def _ts_run_simulation(self) -> None:
         self._ts_run_selected_strategy()
