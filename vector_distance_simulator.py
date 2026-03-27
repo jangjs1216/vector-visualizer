@@ -528,6 +528,19 @@ class VectorDistanceSimulator:
         self.hover_cid = None
         self.leave_cid = None
 
+        # ── Time-series mode state ──
+        self._mode_var = tk.StringVar(value="normal")  # "normal" or "timeseries"
+        self._ts_color_var = tk.StringVar(value=self.color_values[0] if self.color_values else "")
+        self._ts_dates: list[str] = []  # sorted date list for selected color
+        self._ts_date_idx: int = 0  # current step index
+        self._ts_view_mode_var = tk.StringVar(value="step")  # "step" or "overview"
+        self._ts_show_prev_var = tk.BooleanVar(value=True)
+        self._ts_threshold_var = tk.StringVar(value="0.05")
+        self._ts_sim_result: dict | None = None  # date-sequential sim result
+        self._ts_panel_widgets: list[tk.Widget] = []  # for dynamic cleanup
+        self._ts_date_label_var = tk.StringVar(value="")
+        self._ts_metrics_var = tk.StringVar(value="")
+
         self._build_ui()
         self._bind_filter_events()
         self._update_strategy_params()
@@ -580,8 +593,25 @@ class VectorDistanceSimulator:
         )
         ttk.Label(control_frame, text=summary, justify="left").pack(anchor="w", pady=(0, 12))
 
+        # ── Mode Toggle ──
+        mode_box = ttk.LabelFrame(control_frame, text="📌 Mode", padding=8)
+        mode_box.pack(fill=tk.X, pady=(0, 8))
+        ttk.Radiobutton(mode_box, text="일반 (Simulation)", value="normal",
+                        variable=self._mode_var, command=self._on_mode_switch).pack(anchor="w")
+        ttk.Radiobutton(mode_box, text="📅 시계열 분석", value="timeseries",
+                        variable=self._mode_var, command=self._on_mode_switch).pack(anchor="w")
+
+        # Container for mode-specific panels (swapped on mode change)
+        self._normal_panel = ttk.Frame(control_frame)
+        self._normal_panel.pack(fill=tk.X)
+        self._ts_panel = ttk.Frame(control_frame)
+        # ts_panel starts hidden
+
+        # ── NORMAL MODE panel contents ──
+        np_ = self._normal_panel  # shorthand
+
         # ── Method (PCA / UMAP) ──
-        method_box = ttk.LabelFrame(control_frame, text="Method", padding=8)
+        method_box = ttk.LabelFrame(np_, text="Method", padding=8)
         method_box.pack(fill=tk.X, pady=(0, 8))
         ttk.Radiobutton(method_box, text="PCA", value="PCA", variable=self.method_var).pack(anchor="w")
         umap_label = "UMAP" if HAS_UMAP else "UMAP (not installed)"
@@ -590,24 +620,24 @@ class VectorDistanceSimulator:
                         state=umap_state).pack(anchor="w")
 
         # ── Dimension ──
-        dim_box = ttk.LabelFrame(control_frame, text="Dimension", padding=8)
+        dim_box = ttk.LabelFrame(np_, text="Dimension", padding=8)
         dim_box.pack(fill=tk.X, pady=(0, 8))
         ttk.Radiobutton(dim_box, text="2D", value="2D", variable=self.dimension_var).pack(anchor="w")
         ttk.Radiobutton(dim_box, text="3D", value="3D", variable=self.dimension_var).pack(anchor="w")
 
         # ── Color Mode ──
-        cmode_box = ttk.LabelFrame(control_frame, text="Color Mapping (Left View)", padding=8)
+        cmode_box = ttk.LabelFrame(np_, text="Color Mapping (Left View)", padding=8)
         cmode_box.pack(fill=tk.X, pady=(0, 8))
         ttk.Radiobutton(cmode_box, text="Color by color", value="color", variable=self.color_mode_var).pack(anchor="w")
         ttk.Radiobutton(cmode_box, text="Color by side", value="side", variable=self.color_mode_var).pack(anchor="w")
 
         # ── Path Filter ──
-        search_box = ttk.LabelFrame(control_frame, text="Path Filter", padding=8)
+        search_box = ttk.LabelFrame(np_, text="Path Filter", padding=8)
         search_box.pack(fill=tk.X, pady=(0, 8))
         ttk.Entry(search_box, textvariable=self.path_filter_var).pack(fill=tk.X)
 
         # ── Buttons ──
-        btn_box = ttk.Frame(control_frame)
+        btn_box = ttk.Frame(np_)
         btn_box.pack(fill=tk.X, pady=(0, 8))
 
         redraw_btn = ttk.Button(btn_box, text="★ Redraw (recalculate)", command=self.redraw)
@@ -627,19 +657,19 @@ class VectorDistanceSimulator:
         ttk.Button(btn_row2, text="Clear colors", command=self._clear_all_colors).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
 
         # ── Side Filter ──
-        side_box = ttk.LabelFrame(control_frame, text="Side Filter", padding=8)
+        side_box = ttk.LabelFrame(np_, text="Side Filter", padding=8)
         side_box.pack(fill=tk.X, pady=(0, 8))
         for v in self.side_values:
             ttk.Checkbutton(side_box, text=v, variable=self.side_vars[v]).pack(anchor="w")
 
         # ── Color Filter ──
-        color_box = ttk.LabelFrame(control_frame, text="Color Filter", padding=8)
+        color_box = ttk.LabelFrame(np_, text="Color Filter", padding=8)
         color_box.pack(fill=tk.X, pady=(0, 8))
         for v in self.color_values:
             ttk.Checkbutton(color_box, text=v, variable=self.color_vars[v]).pack(anchor="w")
 
         # ── Simulation Controls ──
-        sim_box = ttk.LabelFrame(control_frame, text="🎯 Simulation Controls", padding=8)
+        sim_box = ttk.LabelFrame(np_, text="🎯 Simulation Controls", padding=8)
         sim_box.pack(fill=tk.X, pady=(0, 8))
 
         ttk.Label(sim_box, text="Strategy:", font=("Arial", 10, "bold")).pack(anchor="w")
@@ -676,7 +706,7 @@ class VectorDistanceSimulator:
                   justify="left", foreground="gray").pack(anchor="w")
 
         # ── Simulated Datasets ──
-        ds_outer = ttk.LabelFrame(control_frame, text="📊 Simulated Datasets", padding=8)
+        ds_outer = ttk.LabelFrame(np_, text="📊 Simulated Datasets", padding=8)
         ds_outer.pack(fill=tk.X, pady=(0, 8))
 
         self._sim_dataset_frame = ttk.Frame(ds_outer)
@@ -691,11 +721,14 @@ class VectorDistanceSimulator:
         ttk.Button(ds_outer, text="Clear All Datasets",
                    command=self._clear_all_datasets).pack(fill=tk.X, pady=(6, 0))
 
-        # ── Status ──
-        status_frame = ttk.LabelFrame(control_frame, text="Current View", padding=8)
+        # ── Status (shared) ──
+        status_frame = ttk.LabelFrame(np_, text="Current View", padding=8)
         status_frame.pack(fill=tk.X, pady=(0, 8))
         ttk.Label(status_frame, textvariable=self.status_var,
                   wraplength=300, justify="left").pack(fill=tk.X)
+
+        # ── TIME-SERIES MODE panel contents ──
+        self._build_ts_panel()
 
         # ── LEFT matplotlib canvas ──
         left_label = ttk.Label(self.left_plot_frame, text="📊 Full Dataset View",
@@ -1209,6 +1242,507 @@ class VectorDistanceSimulator:
         ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0, fontsize=7)
         self.right_figure.tight_layout()
         self.right_canvas.draw()
+
+
+    # ── TIME-SERIES mode panel builder ──────────────────────────
+
+    def _build_ts_panel(self) -> None:
+        """Build the time-series analysis mode panel (initially hidden)."""
+        tp = self._ts_panel
+
+        # Method / Dimension (shared with normal mode but duplicated for clarity)
+        row_md = ttk.Frame(tp)
+        row_md.pack(fill=tk.X, pady=(0, 8))
+        mf = ttk.LabelFrame(row_md, text="Method", padding=6)
+        mf.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+        ttk.Radiobutton(mf, text="PCA", value="PCA", variable=self.method_var).pack(anchor="w")
+        umap_state = "normal" if HAS_UMAP else "disabled"
+        ttk.Radiobutton(mf, text="UMAP", value="UMAP", variable=self.method_var,
+                        state=umap_state).pack(anchor="w")
+        df_ = ttk.LabelFrame(row_md, text="Dim", padding=6)
+        df_.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Radiobutton(df_, text="2D", value="2D", variable=self.dimension_var).pack(anchor="w")
+        ttk.Radiobutton(df_, text="3D", value="3D", variable=self.dimension_var).pack(anchor="w")
+
+        # Redraw button
+        ttk.Button(tp, text="★ Redraw (recalculate)", command=self._ts_redraw).pack(fill=tk.X, pady=(0, 8))
+
+        # Color selection
+        color_box = ttk.LabelFrame(tp, text="🎨 Color Selection", padding=8)
+        color_box.pack(fill=tk.X, pady=(0, 8))
+        for cv in self.color_values:
+            ttk.Radiobutton(color_box, text=cv, value=cv, variable=self._ts_color_var,
+                            command=self._update_ts_dates).pack(anchor="w")
+
+        # Date info
+        self._ts_date_info_frame = ttk.LabelFrame(tp, text="📅 Dates Found", padding=8)
+        self._ts_date_info_frame.pack(fill=tk.X, pady=(0, 8))
+        self._ts_date_list_label = ttk.Label(
+            self._ts_date_info_frame, text="Color를 선택하세요",
+            wraplength=290, justify="left", foreground="gray"
+        )
+        self._ts_date_list_label.pack(anchor="w")
+
+        # View mode
+        vm_box = ttk.LabelFrame(tp, text="📺 View Mode", padding=8)
+        vm_box.pack(fill=tk.X, pady=(0, 8))
+        ttk.Radiobutton(vm_box, text="Step-by-Step", value="step",
+                        variable=self._ts_view_mode_var,
+                        command=self._ts_refresh_views).pack(anchor="w")
+        ttk.Radiobutton(vm_box, text="All Dates Overview", value="overview",
+                        variable=self._ts_view_mode_var,
+                        command=self._ts_refresh_views).pack(anchor="w")
+
+        # Step navigation
+        nav_box = ttk.LabelFrame(tp, text="🔄 Navigation", padding=8)
+        nav_box.pack(fill=tk.X, pady=(0, 8))
+        nav_row = ttk.Frame(nav_box)
+        nav_row.pack(fill=tk.X)
+        ttk.Button(nav_row, text="◀", width=4, command=self._ts_prev_date).pack(side=tk.LEFT, padx=2)
+        ttk.Label(nav_row, textvariable=self._ts_date_label_var,
+                  font=("Consolas", 10, "bold"), anchor="center").pack(side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Button(nav_row, text="▶", width=4, command=self._ts_next_date).pack(side=tk.RIGHT, padx=2)
+        ttk.Checkbutton(nav_box, text="Show previous dates (gray)",
+                        variable=self._ts_show_prev_var,
+                        command=self._ts_refresh_views).pack(anchor="w", pady=(6, 0))
+
+        # Simulation controls
+        sim_box = ttk.LabelFrame(tp, text="🎯 Date-Sequential Simulation", padding=8)
+        sim_box.pack(fill=tk.X, pady=(0, 8))
+        thr_row = ttk.Frame(sim_box)
+        thr_row.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(thr_row, text="Min Dist Threshold:", anchor="w").pack(side=tk.LEFT)
+        ttk.Entry(thr_row, textvariable=self._ts_threshold_var, width=8).pack(side=tk.LEFT, padx=(4, 0))
+        self._ts_sim_button = ttk.Button(sim_box, text="▶ Run Date-Sequential Sim",
+                                          command=self._ts_run_simulation)
+        self._ts_sim_button.pack(fill=tk.X, pady=(0, 4))
+        self._ts_progress_var = tk.DoubleVar(value=0)
+        ttk.Progressbar(sim_box, variable=self._ts_progress_var, maximum=100).pack(fill=tk.X, pady=(0, 6))
+
+        # Metrics
+        metrics_box = ttk.LabelFrame(tp, text="📊 Tracking Metrics", padding=8)
+        metrics_box.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(metrics_box, textvariable=self._ts_metrics_var,
+                  wraplength=290, justify="left", font=("Consolas", 9)).pack(fill=tk.X)
+
+        # Status
+        ts_status = ttk.LabelFrame(tp, text="Status", padding=8)
+        ts_status.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(ts_status, textvariable=self.status_var,
+                  wraplength=300, justify="left").pack(fill=tk.X)
+
+    # ── Mode switching ────────────────────────────────────────
+
+    def _on_mode_switch(self) -> None:
+        """Switch between normal and time-series mode."""
+        mode = self._mode_var.get()
+        if mode == "normal":
+            self._ts_panel.pack_forget()
+            self._normal_panel.pack(fill=tk.X)
+            self.redraw()
+        else:
+            self._normal_panel.pack_forget()
+            self._ts_panel.pack(fill=tk.X)
+            self._update_ts_dates()
+
+    # ── Time-series helpers ───────────────────────────────────
+
+    def _update_ts_dates(self) -> None:
+        """Update the date list based on selected color."""
+        color = self._ts_color_var.get()
+        if not color:
+            return
+        mask = self.df["color"].astype(str) == color
+        dates = sorted(self.df[mask]["side"].astype(str).unique().tolist())
+        self._ts_dates = dates
+        self._ts_date_idx = 0
+
+        if dates:
+            self._ts_date_list_label.config(
+                text=f"{len(dates)} dates: {', '.join(dates)}",
+                foreground="black"
+            )
+            self._ts_date_label_var.set(f"{dates[0]}  (1/{len(dates)})")
+        else:
+            self._ts_date_list_label.config(text="해당 color에 데이터 없음", foreground="red")
+            self._ts_date_label_var.set("—")
+
+        self._ts_sim_result = None
+        self._ts_metrics_var.set("")
+        self._ts_refresh_views()
+
+    def _ts_prev_date(self) -> None:
+        if not self._ts_dates:
+            return
+        self._ts_date_idx = max(0, self._ts_date_idx - 1)
+        self._ts_date_label_var.set(
+            f"{self._ts_dates[self._ts_date_idx]}  ({self._ts_date_idx+1}/{len(self._ts_dates)})"
+        )
+        self._ts_refresh_views()
+
+    def _ts_next_date(self) -> None:
+        if not self._ts_dates:
+            return
+        self._ts_date_idx = min(len(self._ts_dates) - 1, self._ts_date_idx + 1)
+        self._ts_date_label_var.set(
+            f"{self._ts_dates[self._ts_date_idx]}  ({self._ts_date_idx+1}/{len(self._ts_dates)})"
+        )
+        self._ts_refresh_views()
+
+    def _ts_redraw(self) -> None:
+        """Redraw for time-series mode (recompute PCA/UMAP, then refresh views)."""
+        self._umap_cache.clear()
+        self._ts_refresh_views()
+
+    def _ts_refresh_views(self) -> None:
+        """Refresh both left and right views in time-series mode."""
+        if self._mode_var.get() != "timeseries" or not self._ts_dates:
+            return
+        self._ts_draw_left()
+        self._ts_draw_right()
+
+    # ── Time-series LEFT view ─────────────────────────────────
+
+    def _ts_draw_left(self) -> None:
+        """Draw left view for time-series mode."""
+        color = self._ts_color_var.get()
+        if not color or not self._ts_dates:
+            return
+
+        is_3d = self.dimension_var.get() == "3D"
+        n_dim = 3 if is_3d else 2
+        method = self.method_var.get()
+        view_mode = self._ts_view_mode_var.get()
+
+        # Get all data for this color
+        color_mask = self.df["color"].astype(str) == color
+        color_df = self.df[color_mask]
+
+        if len(color_df) < 2:
+            self._draw_error("Not enough data for this color")
+            return
+
+        # Compute embedding on all data for this color
+        try:
+            if method == "UMAP" and n_dim in self._umap_cache:
+                emb = self._umap_cache[n_dim][color_mask.values]
+            else:
+                emb = compute_embedding(
+                    color_df, self.vector_columns,
+                    method=method, n_dim=n_dim, standardize=self.standardize,
+                )
+                if method == "UMAP":
+                    # Cache at full df level
+                    full_emb = np.zeros((len(self.df), n_dim))
+                    full_emb[color_mask.values] = emb
+                    self._umap_cache[n_dim] = full_emb
+        except Exception as exc:
+            self._draw_error(f"Embedding error: {exc}")
+            return
+
+        color_df = color_df.copy()
+        color_df["C1"] = emb[:, 0]
+        color_df["C2"] = emb[:, 1]
+        color_df["C3"] = emb[:, 2] if n_dim >= 3 else 0.0
+
+        # Draw
+        self.left_figure.clf()
+        self.left_scatter_lookup = []
+        self.left_ax = self.left_figure.add_subplot(111, projection="3d" if is_3d else None)
+        ax = self.left_ax
+        ax.set_xlabel("C1")
+        ax.set_ylabel("C2")
+        if is_3d:
+            ax.set_zlabel("C3")
+
+        self._build_annotation()
+
+        if view_mode == "overview":
+            self._ts_draw_left_overview(ax, color_df, is_3d)
+        else:
+            self._ts_draw_left_step(ax, color_df, is_3d)
+
+        ax.grid(True, alpha=0.25)
+        ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0, fontsize=7)
+        self.left_figure.tight_layout()
+        self._connect_left_hover()
+        self.left_canvas.draw()
+
+    def _ts_draw_left_overview(self, ax, color_df: pd.DataFrame, is_3d: bool) -> None:
+        """Draw all dates with gradient colors (cool→warm)."""
+        n_dates = len(self._ts_dates)
+        cmap = plt.get_cmap("coolwarm")
+
+        ax.set_title(f"All Dates Overview — {self._ts_color_var.get()} ({n_dates} dates)",
+                     fontsize=11, pad=12)
+
+        for i, date in enumerate(self._ts_dates):
+            date_df = color_df[color_df["side"].astype(str) == date]
+            if len(date_df) == 0:
+                continue
+            c = cmap(i / max(n_dates - 1, 1))
+            lab = f"{date} ({len(date_df)})"
+            date_df = date_df.reset_index(drop=True)
+            kw = dict(s=self.style.point_size, alpha=0.7, c=[c], label=lab, picker=True)
+            if is_3d:
+                sc = ax.scatter(date_df["C1"], date_df["C2"], date_df["C3"], depthshade=True, **kw)
+            else:
+                sc = ax.scatter(date_df["C1"], date_df["C2"], **kw)
+            self.left_scatter_lookup.append((sc, date_df, is_3d))
+
+        self.status_var.set(f"📅 Overview: {n_dates} dates, {len(color_df):,} pts")
+
+    def _ts_draw_left_step(self, ax, color_df: pd.DataFrame, is_3d: bool) -> None:
+        """Draw step-by-step view: current date highlighted, previous dates gray."""
+        if not self._ts_dates:
+            return
+        current_date = self._ts_dates[self._ts_date_idx]
+        show_prev = self._ts_show_prev_var.get()
+
+        ax.set_title(f"Step: {current_date} — {self._ts_color_var.get()}", fontsize=11, pad=12)
+
+        # Draw previous dates in gray if enabled
+        if show_prev and self._ts_date_idx > 0:
+            prev_dates = self._ts_dates[:self._ts_date_idx]
+            prev_mask = color_df["side"].astype(str).isin(prev_dates)
+            prev_df = color_df[prev_mask]
+            if len(prev_df) > 0:
+                prev_df = prev_df.reset_index(drop=True)
+                kw = dict(s=self.style.point_size * 0.6, alpha=0.15,
+                         c=[(0.5, 0.5, 0.5, 0.3)], label=f"prev ({len(prev_df)})")
+                if is_3d:
+                    sc = ax.scatter(prev_df["C1"], prev_df["C2"], prev_df["C3"], depthshade=True, **kw)
+                else:
+                    sc = ax.scatter(prev_df["C1"], prev_df["C2"], **kw)
+                self.left_scatter_lookup.append((sc, prev_df, is_3d))
+
+        # Draw current date in bright color
+        cur_mask = color_df["side"].astype(str) == current_date
+        cur_df = color_df[cur_mask]
+        if len(cur_df) > 0:
+            cur_df = cur_df.reset_index(drop=True)
+            kw = dict(s=self.style.point_size * 1.5, alpha=0.9,
+                     c=[(0.894, 0.102, 0.110, 0.9)], label=f"{current_date} ({len(cur_df)})",
+                     edgecolors="white", linewidths=0.5, picker=True)
+            if is_3d:
+                sc = ax.scatter(cur_df["C1"], cur_df["C2"], cur_df["C3"], depthshade=True, **kw)
+            else:
+                sc = ax.scatter(cur_df["C1"], cur_df["C2"], **kw)
+            self.left_scatter_lookup.append((sc, cur_df, is_3d))
+
+        self.status_var.set(
+            f"📅 Step {self._ts_date_idx+1}/{len(self._ts_dates)}: "
+            f"{current_date} ({len(cur_df):,} pts)"
+        )
+
+    # ── Time-series RIGHT view (simulation results) ───────────
+
+    def _ts_draw_right(self) -> None:
+        """Draw right view: simulation results if available."""
+        self.right_figure.clf()
+        is_3d = self.dimension_var.get() == "3D"
+        n_dim = 3 if is_3d else 2
+        method = self.method_var.get()
+
+        self.right_ax = self.right_figure.add_subplot(111, projection="3d" if is_3d else None)
+        ax = self.right_ax
+        ax.set_xlabel("C1")
+        ax.set_ylabel("C2")
+        if is_3d:
+            ax.set_zlabel("C3")
+
+        if not self._ts_sim_result:
+            ax.set_title("Date-Sequential Simulation", fontsize=11, pad=12)
+            if is_3d:
+                ax.text2D(0.5, 0.5, "시뮬레이션을 실행하세요",
+                          transform=ax.transAxes, ha="center", va="center",
+                          fontsize=11, color="gray")
+            else:
+                ax.text(0.5, 0.5, "시뮬레이션을 실행하세요",
+                        transform=ax.transAxes, ha="center", va="center",
+                        fontsize=11, color="gray")
+            self.right_canvas.draw()
+            return
+
+        # Draw accepted points per date with different colors
+        sim = self._ts_sim_result
+        color_val = self._ts_color_var.get()
+        color_mask = self.df["color"].astype(str) == color_val
+        color_df = self.df[color_mask]
+
+        try:
+            if method == "UMAP" and n_dim in self._umap_cache:
+                emb = self._umap_cache[n_dim][color_mask.values]
+            else:
+                emb = compute_embedding(
+                    color_df, self.vector_columns,
+                    method=method, n_dim=n_dim, standardize=self.standardize,
+                )
+        except Exception:
+            self.right_canvas.draw()
+            return
+
+        color_df = color_df.copy()
+        color_df["C1"] = emb[:, 0]
+        color_df["C2"] = emb[:, 1]
+        color_df["C3"] = emb[:, 2] if n_dim >= 3 else 0.0
+
+        cmap = plt.get_cmap("coolwarm")
+        n_dates = len(sim["per_date"])
+        total_accepted = 0
+
+        for i, (date, info) in enumerate(sim["per_date"].items()):
+            accepted_idx = info["accepted_indices"]
+            if not accepted_idx:
+                continue
+            # Map back to color_df index positions
+            date_mask = color_df.index.isin(accepted_idx)
+            acc_df = color_df[date_mask]
+            if len(acc_df) == 0:
+                continue
+            total_accepted += len(acc_df)
+            c = cmap(i / max(n_dates - 1, 1))
+            lab = f"{date}: {info['accepted']}/{info['total']} ({info['rate']:.0%})"
+            acc_df = acc_df.reset_index(drop=True)
+            kw = dict(s=self.style.point_size * 1.2, alpha=0.8, c=[c], label=lab,
+                     edgecolors="white", linewidths=0.3)
+            if is_3d:
+                ax.scatter(acc_df["C1"], acc_df["C2"], acc_df["C3"], depthshade=True, **kw)
+            else:
+                ax.scatter(acc_df["C1"], acc_df["C2"], **kw)
+
+        ax.set_title(f"Simulation: {total_accepted} accepted (threshold={sim['threshold']})",
+                     fontsize=11, pad=12)
+        ax.grid(True, alpha=0.25)
+        ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0, fontsize=7)
+        self.right_figure.tight_layout()
+        self.right_canvas.draw()
+
+    # ── Time-series simulation ────────────────────────────────
+
+    def _ts_run_simulation(self) -> None:
+        """Run date-sequential Min Distance simulation."""
+        if not self._ts_dates:
+            return
+
+        try:
+            threshold = float(self._ts_threshold_var.get())
+            threshold = max(0.001, min(2.0, threshold))
+        except ValueError:
+            threshold = 0.05
+
+        color = self._ts_color_var.get()
+        color_mask = self.df["color"].astype(str) == color
+        color_df = self.df[color_mask]
+
+        if len(color_df) < 2:
+            self._ts_metrics_var.set("Not enough data")
+            return
+
+        self._ts_sim_button.config(state="disabled")
+        self._ts_progress_var.set(0)
+        self.root.update_idletasks()
+
+        vectors = color_df[self.vector_columns].to_numpy(dtype=np.float64)
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1, norms)
+        normalized = vectors / norms
+
+        # Build index mapping: color_df index -> position in normalized array
+        idx_to_pos = {idx: pos for pos, idx in enumerate(color_df.index)}
+
+        accepted_vecs: list[np.ndarray] = []
+        accepted_indices: list[int] = []
+        per_date: dict = {}
+
+        total_processed = 0
+        total_all = len(color_df)
+
+        for date in self._ts_dates:
+            date_mask = color_df["side"].astype(str) == date
+            date_indices = color_df[date_mask].index.tolist()
+            date_accepted = []
+
+            for idx in date_indices:
+                pos = idx_to_pos[idx]
+                vec = normalized[pos]
+                total_processed += 1
+
+                if not accepted_vecs:
+                    accepted_vecs.append(vec)
+                    accepted_indices.append(idx)
+                    date_accepted.append(idx)
+                else:
+                    others = np.array(accepted_vecs)
+                    sims = others @ vec
+                    min_dist = 1.0 - np.max(sims)
+                    if min_dist >= threshold:
+                        accepted_vecs.append(vec)
+                        accepted_indices.append(idx)
+                        date_accepted.append(idx)
+
+                if total_processed % 100 == 0:
+                    self._ts_progress_var.set(100.0 * total_processed / total_all)
+                    self.root.update_idletasks()
+
+            n_date = len(date_indices)
+            n_acc = len(date_accepted)
+            per_date[date] = {
+                "total": n_date,
+                "accepted": n_acc,
+                "rate": n_acc / max(n_date, 1),
+                "accepted_indices": date_accepted,
+            }
+
+        self._ts_progress_var.set(100)
+        self._ts_sim_button.config(state="normal")
+
+        # Compute metrics
+        n_accepted = len(accepted_indices)
+        if n_accepted >= 2:
+            acc_arr = np.array(accepted_vecs)
+            # Sample for NN distance computation
+            sample_n = min(200, n_accepted)
+            if sample_n < n_accepted:
+                sample_idx = np.random.choice(n_accepted, sample_n, replace=False)
+                sample = acc_arr[sample_idx]
+            else:
+                sample = acc_arr
+            sims = sample @ sample.T
+            np.fill_diagonal(sims, -1)
+            nn_dists = 1.0 - np.max(sims, axis=1)
+            min_nn = float(np.min(nn_dists))
+            mean_nn = float(np.mean(nn_dists))
+        else:
+            min_nn = 0.0
+            mean_nn = 0.0
+
+        self._ts_sim_result = {
+            "threshold": threshold,
+            "per_date": per_date,
+            "total_accepted": n_accepted,
+            "total_processed": total_processed,
+            "min_nn_dist": min_nn,
+            "mean_nn_dist": mean_nn,
+        }
+
+        # Format metrics text
+        lines = ["═══ Tracking Metrics ═══\n"]
+        lines.append(f"{'Date':<10} {'In':>5} {'Accept':>6} {'Rate':>6}")
+        lines.append("─" * 30)
+        for date, info in per_date.items():
+            lines.append(f"{date:<10} {info['total']:>5} {info['accepted']:>6} {info['rate']:>5.0%}")
+        lines.append("─" * 30)
+        lines.append(f"Total: {n_accepted}/{total_processed} ({n_accepted/max(total_processed,1):.1%})")
+        lines.append(f"Min NN Dist:  {min_nn:.6f}")
+        lines.append(f"Mean NN Dist: {mean_nn:.6f}")
+        if min_nn >= threshold:
+            lines.append(f"\n✅ Min NN ≥ threshold ({threshold})")
+        else:
+            lines.append(f"\n⚠️ Min NN < threshold ({threshold})")
+
+        self._ts_metrics_var.set("\n".join(lines))
+        self._ts_draw_right()
 
 
 # ─────────────────────────────────────────────────────────────
