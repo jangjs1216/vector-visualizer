@@ -530,16 +530,23 @@ class VectorDistanceSimulator:
 
         # ── Time-series mode state ──
         self._mode_var = tk.StringVar(value="normal")  # "normal" or "timeseries"
-        self._ts_color_var = tk.StringVar(value=self.color_values[0] if self.color_values else "")
-        self._ts_dates: list[str] = []  # sorted date list for selected color
+        self._ts_color_vars: dict[str, tk.BooleanVar] = {
+            v: tk.BooleanVar(value=(i == 0)) for i, v in enumerate(self.color_values)
+        }
+        self._ts_dates: list[str] = []  # sorted date list for selected colors
         self._ts_date_idx: int = 0  # current step index
         self._ts_view_mode_var = tk.StringVar(value="step")  # "step" or "overview"
         self._ts_show_prev_var = tk.BooleanVar(value=True)
-        self._ts_threshold_var = tk.StringVar(value="0.05")
+        self._ts_strategy_var = tk.StringVar(value="Min Distance")
+        self._ts_param_entries: dict[str, tk.StringVar] = {}
+        self._ts_param_widgets: list[tk.Widget] = []
         self._ts_sim_result: dict | None = None  # date-sequential sim result
         self._ts_panel_widgets: list[tk.Widget] = []  # for dynamic cleanup
         self._ts_date_label_var = tk.StringVar(value="")
         self._ts_metrics_var = tk.StringVar(value="")
+        self._ts_right_mode_var = tk.StringVar(value="all")  # "all" or "step"
+        self._ts_right_date_idx: int = 0
+        self._ts_right_date_label_var = tk.StringVar(value="")
 
         self._build_ui()
         self._bind_filter_events()
@@ -1267,12 +1274,16 @@ class VectorDistanceSimulator:
         # Redraw button
         ttk.Button(tp, text="★ Redraw (recalculate)", command=self._ts_redraw).pack(fill=tk.X, pady=(0, 8))
 
-        # Color selection
-        color_box = ttk.LabelFrame(tp, text="🎨 Color Selection", padding=8)
+        # Color selection (multi-select checkboxes)
+        color_box = ttk.LabelFrame(tp, text="🎨 Color Selection (multi)", padding=8)
         color_box.pack(fill=tk.X, pady=(0, 8))
         for cv in self.color_values:
-            ttk.Radiobutton(color_box, text=cv, value=cv, variable=self._ts_color_var,
+            ttk.Checkbutton(color_box, text=cv, variable=self._ts_color_vars[cv],
                             command=self._update_ts_dates).pack(anchor="w")
+        csel_row = ttk.Frame(color_box)
+        csel_row.pack(fill=tk.X, pady=(4, 0))
+        ttk.Button(csel_row, text="All", command=lambda: [v.set(True) for v in self._ts_color_vars.values()] or self._update_ts_dates()).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+        ttk.Button(csel_row, text="Clear", command=lambda: [v.set(False) for v in self._ts_color_vars.values()] or self._update_ts_dates()).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
 
         # Date info
         self._ts_date_info_frame = ttk.LabelFrame(tp, text="📅 Dates Found", padding=8)
@@ -1306,18 +1317,40 @@ class VectorDistanceSimulator:
                         variable=self._ts_show_prev_var,
                         command=self._ts_refresh_views).pack(anchor="w", pady=(6, 0))
 
-        # Simulation controls
+        # Simulation controls — strategy selector
         sim_box = ttk.LabelFrame(tp, text="🎯 Date-Sequential Simulation", padding=8)
         sim_box.pack(fill=tk.X, pady=(0, 8))
-        thr_row = ttk.Frame(sim_box)
-        thr_row.pack(fill=tk.X, pady=(0, 6))
-        ttk.Label(thr_row, text="Min Dist Threshold:", anchor="w").pack(side=tk.LEFT)
-        ttk.Entry(thr_row, textvariable=self._ts_threshold_var, width=8).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Label(sim_box, text="Strategy:", font=("Arial", 10, "bold")).pack(anchor="w")
+        ts_strategy_combo = ttk.Combobox(
+            sim_box, textvariable=self._ts_strategy_var,
+            values=list(STRATEGIES.keys()), state="readonly", width=28
+        )
+        ts_strategy_combo.pack(fill=tk.X, pady=(2, 4))
+        ts_strategy_combo.bind("<<ComboboxSelected>>", lambda e: self._update_ts_strategy_params())
+        self._ts_param_frame = ttk.Frame(sim_box)
+        self._ts_param_frame.pack(fill=tk.X, pady=(0, 6))
+
         self._ts_sim_button = ttk.Button(sim_box, text="▶ Run Date-Sequential Sim",
                                           command=self._ts_run_simulation)
         self._ts_sim_button.pack(fill=tk.X, pady=(0, 4))
         self._ts_progress_var = tk.DoubleVar(value=0)
         ttk.Progressbar(sim_box, variable=self._ts_progress_var, maximum=100).pack(fill=tk.X, pady=(0, 6))
+
+        # Right view mode — step through sim results or show all
+        rv_box = ttk.LabelFrame(tp, text="🔬 Right View", padding=8)
+        rv_box.pack(fill=tk.X, pady=(0, 8))
+        ttk.Radiobutton(rv_box, text="Show All Dates", value="all",
+                        variable=self._ts_right_mode_var,
+                        command=self._ts_draw_right).pack(anchor="w")
+        ttk.Radiobutton(rv_box, text="Step-by-Step", value="step",
+                        variable=self._ts_right_mode_var,
+                        command=self._ts_draw_right).pack(anchor="w")
+        rv_nav = ttk.Frame(rv_box)
+        rv_nav.pack(fill=tk.X, pady=(4, 0))
+        ttk.Button(rv_nav, text="◀", width=4, command=self._ts_right_prev).pack(side=tk.LEFT, padx=2)
+        ttk.Label(rv_nav, textvariable=self._ts_right_date_label_var,
+                  font=("Consolas", 9), anchor="center").pack(side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Button(rv_nav, text="▶", width=4, command=self._ts_right_next).pack(side=tk.RIGHT, padx=2)
 
         # Metrics
         metrics_box = ttk.LabelFrame(tp, text="📊 Tracking Metrics", padding=8)
@@ -1330,6 +1363,8 @@ class VectorDistanceSimulator:
         ts_status.pack(fill=tk.X, pady=(0, 8))
         ttk.Label(ts_status, textvariable=self.status_var,
                   wraplength=300, justify="left").pack(fill=tk.X)
+
+        self._update_ts_strategy_params()
 
     # ── Mode switching ────────────────────────────────────────
 
@@ -1348,18 +1383,22 @@ class VectorDistanceSimulator:
     # ── Time-series helpers ───────────────────────────────────
 
     def _update_ts_dates(self) -> None:
-        """Update the date list based on selected color."""
-        color = self._ts_color_var.get()
-        if not color:
+        """Update the date list based on selected colors (multi-select)."""
+        sel_colors = {k for k, v in self._ts_color_vars.items() if v.get()}
+        if not sel_colors:
+            self._ts_dates = []
+            self._ts_date_list_label.config(text="Color를 선택하세요", foreground="gray")
+            self._ts_date_label_var.set("—")
             return
-        mask = self.df["color"].astype(str) == color
+        mask = self.df["color"].astype(str).isin(sel_colors)
         dates = sorted(self.df[mask]["side"].astype(str).unique().tolist())
         self._ts_dates = dates
         self._ts_date_idx = 0
 
+        color_str = ", ".join(sorted(sel_colors))
         if dates:
             self._ts_date_list_label.config(
-                text=f"{len(dates)} dates: {', '.join(dates)}",
+                text=f"[{color_str}] {len(dates)} dates: {', '.join(dates)}",
                 foreground="black"
             )
             self._ts_date_label_var.set(f"{dates[0]}  (1/{len(dates)})")
@@ -1394,6 +1433,60 @@ class VectorDistanceSimulator:
         self._umap_cache.clear()
         self._ts_refresh_views()
 
+    def _update_ts_strategy_params(self) -> None:
+        """Re-build strategy param inputs for time-series sim."""
+        for w in self._ts_param_widgets:
+            w.destroy()
+        self._ts_param_widgets.clear()
+        self._ts_param_entries.clear()
+        strategy = self._ts_strategy_var.get()
+        info = STRATEGIES.get(strategy, {})
+        for key, pinfo in info.get("params", {}).items():
+            row = ttk.Frame(self._ts_param_frame)
+            row.pack(fill=tk.X, pady=2)
+            self._ts_param_widgets.append(row)
+            ttk.Label(row, text=f"{pinfo['label']}:", width=20, anchor="w").pack(side=tk.LEFT)
+            var = tk.StringVar(value=str(pinfo["default"]))
+            self._ts_param_entries[key] = var
+            ttk.Entry(row, textvariable=var, width=10).pack(side=tk.LEFT, padx=(4, 0))
+            ttk.Label(row, text=f"({pinfo['min']}~{pinfo['max']})",
+                     foreground="gray", font=("Arial", 8)).pack(side=tk.LEFT, padx=(4, 0))
+
+    def _get_ts_strategy_params(self) -> dict:
+        """Parse current TS strategy params."""
+        strategy = self._ts_strategy_var.get()
+        info = STRATEGIES.get(strategy, {})
+        result = {}
+        for key, pinfo in info.get("params", {}).items():
+            try:
+                val = float(self._ts_param_entries[key].get())
+                val = max(pinfo["min"], min(pinfo["max"], val))
+            except (ValueError, KeyError):
+                val = pinfo["default"]
+            if key == "k":
+                val = int(val)
+            result[key] = val
+        return result
+
+    def _ts_right_prev(self) -> None:
+        if not self._ts_sim_result or not self._ts_dates:
+            return
+        self._ts_right_date_idx = max(0, self._ts_right_date_idx - 1)
+        d = self._ts_dates[self._ts_right_date_idx]
+        self._ts_right_date_label_var.set(f"{d}  ({self._ts_right_date_idx+1}/{len(self._ts_dates)})")
+        self._ts_draw_right()
+
+    def _ts_right_next(self) -> None:
+        if not self._ts_sim_result or not self._ts_dates:
+            return
+        self._ts_right_date_idx = min(len(self._ts_dates) - 1, self._ts_right_date_idx + 1)
+        d = self._ts_dates[self._ts_right_date_idx]
+        self._ts_right_date_label_var.set(f"{d}  ({self._ts_right_date_idx+1}/{len(self._ts_dates)})")
+        self._ts_draw_right()
+
+    def _get_selected_colors(self) -> set[str]:
+        return {k for k, v in self._ts_color_vars.items() if v.get()}
+
     def _ts_refresh_views(self) -> None:
         """Refresh both left and right views in time-series mode."""
         if self._mode_var.get() != "timeseries" or not self._ts_dates:
@@ -1405,8 +1498,8 @@ class VectorDistanceSimulator:
 
     def _ts_draw_left(self) -> None:
         """Draw left view for time-series mode."""
-        color = self._ts_color_var.get()
-        if not color or not self._ts_dates:
+        sel_colors = self._get_selected_colors()
+        if not sel_colors or not self._ts_dates:
             return
 
         is_3d = self.dimension_var.get() == "3D"
@@ -1414,8 +1507,11 @@ class VectorDistanceSimulator:
         method = self.method_var.get()
         view_mode = self._ts_view_mode_var.get()
 
-        # Get all data for this color
-        color_mask = self.df["color"].astype(str) == color
+        # Get all data for selected colors
+        sel_colors = self._get_selected_colors()
+        if not sel_colors:
+            return
+        color_mask = self.df["color"].astype(str).isin(sel_colors)
         color_df = self.df[color_mask]
 
         if len(color_df) < 2:
@@ -1473,7 +1569,7 @@ class VectorDistanceSimulator:
         n_dates = len(self._ts_dates)
         cmap = plt.get_cmap("coolwarm")
 
-        ax.set_title(f"All Dates Overview — {self._ts_color_var.get()} ({n_dates} dates)",
+        ax.set_title(f"All Dates Overview — {', '.join(sorted(self._get_selected_colors()))} ({n_dates} dates)",
                      fontsize=11, pad=12)
 
         for i, date in enumerate(self._ts_dates):
@@ -1499,7 +1595,7 @@ class VectorDistanceSimulator:
         current_date = self._ts_dates[self._ts_date_idx]
         show_prev = self._ts_show_prev_var.get()
 
-        ax.set_title(f"Step: {current_date} — {self._ts_color_var.get()}", fontsize=11, pad=12)
+        ax.set_title(f"Step: {current_date} — {', '.join(sorted(self._get_selected_colors()))}", fontsize=11, pad=12)
 
         # Draw previous dates in gray if enabled
         if show_prev and self._ts_date_idx > 0:
@@ -1546,30 +1642,26 @@ class VectorDistanceSimulator:
 
         self.right_ax = self.right_figure.add_subplot(111, projection="3d" if is_3d else None)
         ax = self.right_ax
-        ax.set_xlabel("C1")
-        ax.set_ylabel("C2")
+        ax.set_xlabel("C1"); ax.set_ylabel("C2")
         if is_3d:
             ax.set_zlabel("C3")
 
         if not self._ts_sim_result:
             ax.set_title("Date-Sequential Simulation", fontsize=11, pad=12)
+            msg = "시뮬레이션을 실행하세요"
             if is_3d:
-                ax.text2D(0.5, 0.5, "시뮬레이션을 실행하세요",
-                          transform=ax.transAxes, ha="center", va="center",
-                          fontsize=11, color="gray")
+                ax.text2D(0.5, 0.5, msg, transform=ax.transAxes,
+                          ha="center", va="center", fontsize=11, color="gray")
             else:
-                ax.text(0.5, 0.5, "시뮬레이션을 실행하세요",
-                        transform=ax.transAxes, ha="center", va="center",
-                        fontsize=11, color="gray")
+                ax.text(0.5, 0.5, msg, transform=ax.transAxes,
+                        ha="center", va="center", fontsize=11, color="gray")
             self.right_canvas.draw()
             return
 
-        # Draw accepted points per date with different colors
-        sim = self._ts_sim_result
-        color_val = self._ts_color_var.get()
-        color_mask = self.df["color"].astype(str) == color_val
+        # Get color data + embedding
+        sel_colors = self._get_selected_colors()
+        color_mask = self.df["color"].astype(str).isin(sel_colors)
         color_df = self.df[color_mask]
-
         try:
             if method == "UMAP" and n_dim in self._umap_cache:
                 emb = self._umap_cache[n_dim][color_mask.values]
@@ -1587,32 +1679,70 @@ class VectorDistanceSimulator:
         color_df["C2"] = emb[:, 1]
         color_df["C3"] = emb[:, 2] if n_dim >= 3 else 0.0
 
+        sim = self._ts_sim_result
+        right_mode = self._ts_right_mode_var.get()
         cmap = plt.get_cmap("coolwarm")
         n_dates = len(sim["per_date"])
-        total_accepted = 0
 
-        for i, (date, info) in enumerate(sim["per_date"].items()):
-            accepted_idx = info["accepted_indices"]
-            if not accepted_idx:
-                continue
-            # Map back to color_df index positions
-            date_mask = color_df.index.isin(accepted_idx)
-            acc_df = color_df[date_mask]
-            if len(acc_df) == 0:
-                continue
-            total_accepted += len(acc_df)
-            c = cmap(i / max(n_dates - 1, 1))
-            lab = f"{date}: {info['accepted']}/{info['total']} ({info['rate']:.0%})"
-            acc_df = acc_df.reset_index(drop=True)
-            kw = dict(s=self.style.point_size * 1.2, alpha=0.8, c=[c], label=lab,
-                     edgecolors="white", linewidths=0.3)
-            if is_3d:
-                ax.scatter(acc_df["C1"], acc_df["C2"], acc_df["C3"], depthshade=True, **kw)
-            else:
-                ax.scatter(acc_df["C1"], acc_df["C2"], **kw)
+        if right_mode == "step":
+            # Step-by-step right view — show accepted up to current right date
+            rd_idx = min(self._ts_right_date_idx, n_dates - 1)
+            dates_list = list(sim["per_date"].keys())
+            current_rd = dates_list[rd_idx] if dates_list else ""
 
-        ax.set_title(f"Simulation: {total_accepted} accepted (threshold={sim['threshold']})",
-                     fontsize=11, pad=12)
+            # Show gray for previous dates' accepted pts
+            total_shown = 0
+            for i, (date, info) in enumerate(sim["per_date"].items()):
+                if i > rd_idx:
+                    break
+                accepted_idx = info["accepted_indices"]
+                if not accepted_idx:
+                    continue
+                date_mask2 = color_df.index.isin(accepted_idx)
+                acc_df = color_df[date_mask2].reset_index(drop=True)
+                if len(acc_df) == 0:
+                    continue
+                total_shown += len(acc_df)
+                if i < rd_idx:
+                    kw = dict(s=self.style.point_size * 0.7, alpha=0.2,
+                             c=[(0.5, 0.5, 0.5, 0.3)])
+                else:
+                    c = cmap(i / max(n_dates - 1, 1))
+                    kw = dict(s=self.style.point_size * 1.3, alpha=0.9, c=[c],
+                             label=f"{date}: {info['accepted']}/{info['total']} ({info['rate']:.0%})",
+                             edgecolors="white", linewidths=0.5)
+                if is_3d:
+                    ax.scatter(acc_df["C1"], acc_df["C2"], acc_df["C3"], depthshade=True, **kw)
+                else:
+                    ax.scatter(acc_df["C1"], acc_df["C2"], **kw)
+
+            ax.set_title(f"Sim Step: {current_rd} ({total_shown} pts)",
+                         fontsize=11, pad=12)
+        else:
+            # Show all dates
+            total_accepted = 0
+            for i, (date, info) in enumerate(sim["per_date"].items()):
+                accepted_idx = info["accepted_indices"]
+                if not accepted_idx:
+                    continue
+                date_mask2 = color_df.index.isin(accepted_idx)
+                acc_df = color_df[date_mask2].reset_index(drop=True)
+                if len(acc_df) == 0:
+                    continue
+                total_accepted += len(acc_df)
+                c = cmap(i / max(n_dates - 1, 1))
+                lab = f"{date}: {info['accepted']}/{info['total']} ({info['rate']:.0%})"
+                kw = dict(s=self.style.point_size * 1.2, alpha=0.8, c=[c], label=lab,
+                         edgecolors="white", linewidths=0.3)
+                if is_3d:
+                    ax.scatter(acc_df["C1"], acc_df["C2"], acc_df["C3"], depthshade=True, **kw)
+                else:
+                    ax.scatter(acc_df["C1"], acc_df["C2"], **kw)
+
+            strat = sim.get("strategy", "")
+            ax.set_title(f"Sim [{strat}]: {total_accepted} accepted",
+                         fontsize=11, pad=12)
+
         ax.grid(True, alpha=0.25)
         ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0, fontsize=7)
         self.right_figure.tight_layout()
@@ -1621,18 +1751,18 @@ class VectorDistanceSimulator:
     # ── Time-series simulation ────────────────────────────────
 
     def _ts_run_simulation(self) -> None:
-        """Run date-sequential Min Distance simulation."""
+        """Run date-sequential simulation using selected strategy."""
         if not self._ts_dates:
             return
 
-        try:
-            threshold = float(self._ts_threshold_var.get())
-            threshold = max(0.001, min(2.0, threshold))
-        except ValueError:
-            threshold = 0.05
+        sel_colors = self._get_selected_colors()
+        if not sel_colors:
+            return
 
-        color = self._ts_color_var.get()
-        color_mask = self.df["color"].astype(str) == color
+        strategy_name = self._ts_strategy_var.get()
+        params = self._get_ts_strategy_params()
+
+        color_mask = self.df["color"].astype(str).isin(sel_colors)
         color_df = self.df[color_mask]
 
         if len(color_df) < 2:
@@ -1648,13 +1778,11 @@ class VectorDistanceSimulator:
         norms = np.where(norms == 0, 1, norms)
         normalized = vectors / norms
 
-        # Build index mapping: color_df index -> position in normalized array
         idx_to_pos = {idx: pos for pos, idx in enumerate(color_df.index)}
 
         accepted_vecs: list[np.ndarray] = []
         accepted_indices: list[int] = []
         per_date: dict = {}
-
         total_processed = 0
         total_all = len(color_df)
 
@@ -1673,10 +1801,7 @@ class VectorDistanceSimulator:
                     accepted_indices.append(idx)
                     date_accepted.append(idx)
                 else:
-                    others = np.array(accepted_vecs)
-                    sims = others @ vec
-                    min_dist = 1.0 - np.max(sims)
-                    if min_dist >= threshold:
+                    if StreamingSimulator._should_accept(vec, accepted_vecs, strategy_name, params):
                         accepted_vecs.append(vec)
                         accepted_indices.append(idx)
                         date_accepted.append(idx)
@@ -1701,7 +1826,6 @@ class VectorDistanceSimulator:
         n_accepted = len(accepted_indices)
         if n_accepted >= 2:
             acc_arr = np.array(accepted_vecs)
-            # Sample for NN distance computation
             sample_n = min(200, n_accepted)
             if sample_n < n_accepted:
                 sample_idx = np.random.choice(n_accepted, sample_n, replace=False)
@@ -1718,7 +1842,8 @@ class VectorDistanceSimulator:
             mean_nn = 0.0
 
         self._ts_sim_result = {
-            "threshold": threshold,
+            "strategy": strategy_name,
+            "params": params,
             "per_date": per_date,
             "total_accepted": n_accepted,
             "total_processed": total_processed,
@@ -1726,9 +1851,17 @@ class VectorDistanceSimulator:
             "mean_nn_dist": mean_nn,
         }
 
+        self._ts_right_date_idx = 0
+        if self._ts_dates:
+            self._ts_right_date_label_var.set(
+                f"{self._ts_dates[0]}  (1/{len(self._ts_dates)})"
+            )
+
         # Format metrics text
-        lines = ["═══ Tracking Metrics ═══\n"]
-        lines.append(f"{'Date':<10} {'In':>5} {'Accept':>6} {'Rate':>6}")
+        lines = [f"═══ {strategy_name} ═══\n"]
+        for k, v in params.items():
+            lines.append(f"  {k}={v}")
+        lines.append(f"\n{'Date':<10} {'In':>5} {'Accept':>6} {'Rate':>6}")
         lines.append("─" * 30)
         for date, info in per_date.items():
             lines.append(f"{date:<10} {info['total']:>5} {info['accepted']:>6} {info['rate']:>5.0%}")
@@ -1736,10 +1869,6 @@ class VectorDistanceSimulator:
         lines.append(f"Total: {n_accepted}/{total_processed} ({n_accepted/max(total_processed,1):.1%})")
         lines.append(f"Min NN Dist:  {min_nn:.6f}")
         lines.append(f"Mean NN Dist: {mean_nn:.6f}")
-        if min_nn >= threshold:
-            lines.append(f"\n✅ Min NN ≥ threshold ({threshold})")
-        else:
-            lines.append(f"\n⚠️ Min NN < threshold ({threshold})")
 
         self._ts_metrics_var.set("\n".join(lines))
         self._ts_draw_right()
