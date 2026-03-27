@@ -447,6 +447,9 @@ BUFFER_STRATEGIES = {
     "Stable Coverage Memory": {
         "desc": "가장 가까운 기존 샘플과의 거리만으로 빈 공간을 채우는 안정형 메모리입니다. 이미 본 이미지는 유지하고, 비어 있는 영역만 추가로 채우는 현재 목적에 가장 가깝습니다.",
     },
+    "Density Matching Memory": {
+        "desc": "Mother의 local density 대비 현재 버퍼가 덜 채워진 위치만 추가합니다. 빈 곳은 자동으로 채우고, 밀집한 곳은 비례해서 더 많이 유지하는 연속형 밀도 추종 전략입니다.",
+    },
 }
 
 TS_COMMON_PARAMS = {
@@ -454,6 +457,8 @@ TS_COMMON_PARAMS = {
     "max_age_days": {"label": "Max Age Days (K)", "default": 30, "min": 1, "max": 365, "type": "int"},
     "region_count": {"label": "Region Count", "default": 8, "min": 1, "max": 64, "type": "int"},
     "distance_threshold": {"label": "Cosine Dist Threshold", "default": 0.02, "min": 0.0, "max": 2.0, "type": "float"},
+    "density_knn_k": {"label": "Density KNN K", "default": 5, "min": 1, "max": 32, "type": "int"},
+    "density_alpha": {"label": "Density Alpha", "default": 1.30, "min": 1.0, "max": 5.0, "type": "float"},
 }
 
 TS_METRIC_HELP = {
@@ -499,6 +504,17 @@ def mean_nearest_neighbor_distance(normalized_vectors: np.ndarray) -> float:
     nn_sims = np.max(sims, axis=1)
     nn_dists = 1.0 - nn_sims
     return float(np.mean(nn_dists))
+
+
+def kth_nearest_neighbor_distances(normalized_vectors: np.ndarray, k: int) -> np.ndarray:
+    n = len(normalized_vectors)
+    if n <= 1:
+        return np.full(n, np.inf, dtype=np.float64)
+    k_eff = max(1, min(int(k), n - 1))
+    sims = normalized_vectors @ normalized_vectors.T
+    np.fill_diagonal(sims, -np.inf)
+    part = np.partition(sims, -k_eff, axis=1)[:, -k_eff]
+    return 1.0 - part.astype(np.float64)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -2322,6 +2338,9 @@ class VectorDistanceSimulator:
         for date in dates:
             date_positions[date] = np.where(side_values == date)[0].tolist()
 
+        density_k = int(params.get("density_knn_k", 5))
+        mother_kth = kth_nearest_neighbor_distances(normalized, density_k)
+
         return {
             "color_df": color_df,
             "normalized": normalized,
@@ -2334,6 +2353,8 @@ class VectorDistanceSimulator:
             "date_positions": date_positions,
             "dates": list(dates),
             "mother_mean_nn": mean_nearest_neighbor_distance(normalized),
+            "mother_kth_dist": mother_kth,
+            "density_k": density_k,
         }
 
     def _prepare_ts_simulation_context(self, params: dict) -> dict | None:
@@ -2351,6 +2372,15 @@ class VectorDistanceSimulator:
         sims = normalized[np.asarray(candidate_positions, dtype=int)] @ normalized[pos]
         return float(1.0 - np.max(sims))
 
+    def _ts_knn_cosine_distance(self, normalized: np.ndarray, pos: int, candidate_positions: list[int], k: int) -> float:
+        if not candidate_positions:
+            return float("inf")
+        idx = np.asarray(candidate_positions, dtype=int)
+        sims = normalized[idx] @ normalized[pos]
+        k_eff = max(1, min(int(k), len(idx)))
+        kth_sim = np.partition(sims, -k_eff)[-k_eff]
+        return float(1.0 - kth_sim)
+
     def _ts_effective_distance_threshold(self, strategy_name: str, context: dict, params: dict) -> float:
         base = float(params["distance_threshold"])
         mother_nn = float(context.get("mother_mean_nn", 0.0))
@@ -2358,6 +2388,8 @@ class VectorDistanceSimulator:
             adaptive = max(0.005, mother_nn * 0.35)
         elif strategy_name == "Stable Coverage Memory":
             adaptive = max(0.004, mother_nn * 0.45)
+        elif strategy_name == "Density Matching Memory":
+            adaptive = max(0.004, mother_nn * 0.30)
         else:
             adaptive = max(0.003, mother_nn * 0.20)
         return float(min(base, adaptive) if base > 0 else adaptive)
@@ -2391,6 +2423,21 @@ class VectorDistanceSimulator:
             warmup_target = min(context["capacity"], max(16, context["region_count"] * 3))
             threshold = effective_threshold * (0.45 if len(buffer) < warmup_target else 1.0)
             return np.isinf(global_min) or global_min >= threshold
+
+        if strategy_name == "Density Matching Memory":
+            k = int(params.get("density_knn_k", context.get("density_k", 5)))
+            alpha = float(params.get("density_alpha", 1.3))
+            warmup_target = min(context["capacity"], max(16, k * 4))
+            if len(buffer) < warmup_target:
+                threshold = effective_threshold * 0.5
+                return np.isinf(global_min) or global_min >= threshold
+            buffer_k = self._ts_knn_cosine_distance(normalized, pos, buffer_positions, k)
+            mother_k = float(context["mother_kth_dist"][pos]) if len(context.get("mother_kth_dist", [])) > pos else float("inf")
+            if np.isinf(buffer_k):
+                return True
+            mother_k = max(mother_k, 1e-6)
+            gap = buffer_k / mother_k
+            return bool(gap > alpha)
 
         region = int(context["cluster_labels"][pos])
         quota = int(context["quotas"][region])
@@ -2430,7 +2477,7 @@ class VectorDistanceSimulator:
         normalized = context["normalized"]
         over_quota = np.maximum(cluster_counts - quotas, 0)
         must_reduce_regions = {i for i, v in enumerate(over_quota) if v > 0}
-        if strategy_name == "Stable Coverage Memory":
+        if strategy_name in {"Stable Coverage Memory", "Density Matching Memory"}:
             must_reduce_regions = set()
 
         best_idx = 0
@@ -2446,6 +2493,14 @@ class VectorDistanceSimulator:
             age = self._ts_age_days(current_value, entry.time_value)
             if strategy_name == "Stable Coverage Memory":
                 score = redundancy * 100.0 + age
+            elif strategy_name == "Density Matching Memory":
+                k = int(context.get("density_k", 5))
+                peers_all = [other.pos for j, other in enumerate(buffer) if j != i]
+                buffer_k = self._ts_knn_cosine_distance(normalized, entry.pos, peers_all, k)
+                mother_k = float(context["mother_kth_dist"][entry.pos]) if len(context.get("mother_kth_dist", [])) > entry.pos else float("inf")
+                mother_k = max(mother_k, 1e-6)
+                oversupply = 0.0 if np.isinf(buffer_k) else max((mother_k / max(buffer_k, 1e-6)) - 1.0, 0.0)
+                score = oversupply * 120.0 + age
             elif strategy_name == "Distance Gate FIFO":
                 score = redundancy * 50.0 + age
             else:
