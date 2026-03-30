@@ -107,6 +107,13 @@ def _extract_filename_from_path(path_value: str) -> str:
 
 def extract_px_py_from_path(path_value: str) -> tuple[str, str]:
     filename = _extract_filename_from_path(path_value)
+    match = re.match(
+        r"^\[([^\[\]]*)\]\[([^\[\]]*)\]\[([^\[\]]*)\]\[([^\[\]]*)\]",
+        filename,
+    )
+    if match:
+        return _normalize_pxpy_value(match.group(3)), _normalize_pxpy_value(match.group(4))
+
     tokens = re.findall(r"\[([^\[\]]*)\]", filename)
     if len(tokens) < 4:
         return PXPY_MISSING, PXPY_MISSING
@@ -119,6 +126,20 @@ def add_px_py_columns(df: pd.DataFrame) -> pd.DataFrame:
     df["px"] = [px for px, _ in px_py]
     df["py"] = [py for _, py in px_py]
     return df
+
+
+def _log_px_py_examples(df: pd.DataFrame, limit: int = 5) -> None:
+    if df.empty:
+        return
+
+    print("  Px/Py parse samples:", flush=True)
+    sample = df[["path", "px", "py"]].head(limit)
+    for _, row in sample.iterrows():
+        filename = _extract_filename_from_path(row["path"])
+        print(
+            f"    {filename} -> px={row['px']}, py={row['py']}",
+            flush=True,
+        )
 
 
 def quick_scan_csv(csv_path: str) -> tuple[int, list[str]]:
@@ -235,6 +256,7 @@ def load_csv(
     print(f"  Validation: {t2 - t1:.1f}s (valid: {len(df):,}, skipped: {skipped:,})", flush=True)
 
     df = add_px_py_columns(df)
+    _log_px_py_examples(df)
 
     # Side filter
     if side_filter:
