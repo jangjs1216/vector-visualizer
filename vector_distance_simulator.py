@@ -120,11 +120,16 @@ def extract_px_py_from_path(path_value: str) -> tuple[str, str]:
     return _normalize_pxpy_value(tokens[0]), _normalize_pxpy_value(tokens[1])
 
 
+def format_px_py_pair(px: str, py: str) -> str:
+    return f"({px}, {py})"
+
+
 def add_px_py_columns(df: pd.DataFrame) -> pd.DataFrame:
     px_py = df["path"].astype(str).map(extract_px_py_from_path)
     df = df.copy()
     df["px"] = [px for px, _ in px_py]
     df["py"] = [py for _, py in px_py]
+    df["px_py"] = [format_px_py_pair(px, py) for px, py in px_py]
     return df
 
 
@@ -133,11 +138,11 @@ def _log_px_py_examples(df: pd.DataFrame, limit: int = 5) -> None:
         return
 
     print("  Px/Py parse samples (px=1st bracket, py=2nd bracket):", flush=True)
-    sample = df[["path", "px", "py"]].head(limit)
+    sample = df[["path", "px", "py", "px_py"]].head(limit)
     for _, row in sample.iterrows():
         filename = _extract_filename_from_path(row["path"])
         print(
-            f"    {filename} -> px(first)={row['px']}, py(second)={row['py']}",
+            f"    {filename} -> px(first)={row['px']}, py(second)={row['py']}, pair={row['px_py']}",
             flush=True,
         )
 
@@ -605,8 +610,7 @@ class VectorDistanceSimulator:
 
         self.side_values = sorted(self.df["side"].dropna().astype(str).unique().tolist())
         self.color_values = sorted(self.df["color"].dropna().astype(str).unique().tolist())
-        self.px_values = sorted(self.df["px"].dropna().astype(str).unique().tolist())
-        self.py_values = sorted(self.df["py"].dropna().astype(str).unique().tolist())
+        self.px_py_values = sorted(self.df["px_py"].dropna().astype(str).unique().tolist())
 
         self.side_vars: dict[str, tk.BooleanVar] = {
             v: tk.BooleanVar(value=True) for v in self.side_values
@@ -614,11 +618,8 @@ class VectorDistanceSimulator:
         self.color_vars: dict[str, tk.BooleanVar] = {
             v: tk.BooleanVar(value=True) for v in self.color_values
         }
-        self.px_vars: dict[str, tk.BooleanVar] = {
-            v: tk.BooleanVar(value=True) for v in self.px_values
-        }
-        self.py_vars: dict[str, tk.BooleanVar] = {
-            v: tk.BooleanVar(value=True) for v in self.py_values
+        self.px_py_vars: dict[str, tk.BooleanVar] = {
+            v: tk.BooleanVar(value=True) for v in self.px_py_values
         }
 
         self.dimension_var = tk.StringVar(value="3D")
@@ -630,6 +631,7 @@ class VectorDistanceSimulator:
 
         self.side_palette = build_palette(self.side_values)
         self.color_palette = build_palette(self.color_values)
+        self.px_py_palette = build_palette(self.px_py_values)
 
         # Left view (full dataset)
         self.left_figure = plt.Figure(figsize=(7, 6), dpi=100, facecolor="white")
@@ -714,6 +716,19 @@ class VectorDistanceSimulator:
 
     # ── UI ───────────────────────────────────────────────────
 
+    def _build_pair_checklist(self, parent: ttk.Frame, columns: int = 3) -> None:
+        for col in range(columns):
+            parent.columnconfigure(col, weight=1)
+
+        for idx, pair in enumerate(self.px_py_values):
+            row = idx // columns
+            col = idx % columns
+            ttk.Checkbutton(
+                parent,
+                text=pair,
+                variable=self.px_py_vars[pair],
+            ).grid(row=row, column=col, sticky="w", padx=(0, 10), pady=2)
+
     def _build_ui(self) -> None:
         self.root.title("Vector Distance Simulator")
         self.root.geometry("1920x900")
@@ -756,7 +771,7 @@ class VectorDistanceSimulator:
         summary = (
             f"Total rows: {self.total_loaded:,}  |  Skipped: {self.skipped:,}\n"
             f"Sides: {len(self.side_values)}, Colors: {len(self.color_values)}\n"
-            f"Px (1st bracket): {len(self.px_values)}, Py (2nd bracket): {len(self.py_values)}"
+            f"(Px, Py) pairs: {len(self.px_py_values)}"
         )
         ttk.Label(control_frame, text=summary, justify="left").pack(anchor="w", pady=(0, 12))
 
@@ -797,6 +812,7 @@ class VectorDistanceSimulator:
         cmode_box.pack(fill=tk.X, pady=(0, 8))
         ttk.Radiobutton(cmode_box, text="Color by color", value="color", variable=self.color_mode_var).pack(anchor="w")
         ttk.Radiobutton(cmode_box, text="Color by side", value="side", variable=self.color_mode_var).pack(anchor="w")
+        ttk.Radiobutton(cmode_box, text="Color by (px, py)", value="px_py", variable=self.color_mode_var).pack(anchor="w")
 
         # ── Path Filter ──
         search_box = ttk.LabelFrame(np_, text="Path Filter", padding=8)
@@ -825,13 +841,8 @@ class VectorDistanceSimulator:
 
         btn_row3 = ttk.Frame(btn_box)
         btn_row3.pack(fill=tk.X, pady=(2, 0))
-        ttk.Button(btn_row3, text="All px(1st)", command=self._select_all_px).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
-        ttk.Button(btn_row3, text="Clear px(1st)", command=self._clear_all_px).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
-
-        btn_row4 = ttk.Frame(btn_box)
-        btn_row4.pack(fill=tk.X, pady=(2, 0))
-        ttk.Button(btn_row4, text="All py(2nd)", command=self._select_all_py).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
-        ttk.Button(btn_row4, text="Clear py(2nd)", command=self._clear_all_py).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+        ttk.Button(btn_row3, text="All pairs", command=self._select_all_px_py_pairs).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+        ttk.Button(btn_row3, text="Clear pairs", command=self._clear_all_px_py_pairs).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
 
         # ── Side Filter ──
         side_box = ttk.LabelFrame(np_, text="Side Filter", padding=8)
@@ -845,15 +856,18 @@ class VectorDistanceSimulator:
         for v in self.color_values:
             ttk.Checkbutton(color_box, text=v, variable=self.color_vars[v]).pack(anchor="w")
 
-        px_box = ttk.LabelFrame(np_, text="Px Filter (1st bracket)", padding=8)
-        px_box.pack(fill=tk.X, pady=(0, 8))
-        for v in self.px_values:
-            ttk.Checkbutton(px_box, text=v, variable=self.px_vars[v]).pack(anchor="w")
-
-        py_box = ttk.LabelFrame(np_, text="Py Filter (2nd bracket)", padding=8)
-        py_box.pack(fill=tk.X, pady=(0, 8))
-        for v in self.py_values:
-            ttk.Checkbutton(py_box, text=v, variable=self.py_vars[v]).pack(anchor="w")
+        pair_box = ttk.LabelFrame(np_, text="(Px, Py) Pair Filter", padding=8)
+        pair_box.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(
+            pair_box,
+            text="px, py 조합 단위로 필터링합니다\n체크 해제 후 Redraw로 바로 비교할 수 있습니다.",
+            wraplength=280,
+            justify="left",
+            foreground="gray",
+        ).pack(anchor="w", pady=(0, 6))
+        pair_grid = ttk.Frame(pair_box)
+        pair_grid.pack(fill=tk.X)
+        self._build_pair_checklist(pair_grid, columns=3)
 
         # ── Simulation Controls ──
         sim_box = ttk.LabelFrame(np_, text="🎯 Simulation Controls", padding=8)
@@ -956,9 +970,7 @@ class VectorDistanceSimulator:
             v.trace_add("write", _on_filter_change)
         for v in self.color_vars.values():
             v.trace_add("write", _on_filter_change)
-        for v in self.px_vars.values():
-            v.trace_add("write", _on_filter_change)
-        for v in self.py_vars.values():
+        for v in self.px_py_vars.values():
             v.trace_add("write", _on_filter_change)
         self.path_filter_var.trace_add("write", _on_filter_change)
         self.color_mode_var.trace_add("write", _on_filter_change)
@@ -976,29 +988,21 @@ class VectorDistanceSimulator:
     def _clear_all_colors(self):
         for v in self.color_vars.values(): v.set(False)
 
-    def _select_all_px(self):
-        for v in self.px_vars.values(): v.set(True)
+    def _select_all_px_py_pairs(self):
+        for v in self.px_py_vars.values(): v.set(True)
 
-    def _clear_all_px(self):
-        for v in self.px_vars.values(): v.set(False)
-
-    def _select_all_py(self):
-        for v in self.py_vars.values(): v.set(True)
-
-    def _clear_all_py(self):
-        for v in self.py_vars.values(): v.set(False)
+    def _clear_all_px_py_pairs(self):
+        for v in self.px_py_vars.values(): v.set(False)
 
     def _get_filtered_indices(self) -> np.ndarray:
         """Return boolean mask for self.df based on current filters."""
         sel_sides = {k for k, v in self.side_vars.items() if v.get()}
         sel_colors = {k for k, v in self.color_vars.items() if v.get()}
-        sel_px = {k for k, v in self.px_vars.items() if v.get()}
-        sel_py = {k for k, v in self.py_vars.items() if v.get()}
+        sel_pairs = {k for k, v in self.px_py_vars.items() if v.get()}
         mask = (
             self.df["side"].astype(str).isin(sel_sides)
             & self.df["color"].astype(str).isin(sel_colors)
-            & self.df["px"].astype(str).isin(sel_px)
-            & self.df["py"].astype(str).isin(sel_py)
+            & self.df["px_py"].astype(str).isin(sel_pairs)
         )
         pt = self.path_filter_var.get().strip().lower()
         if pt:
@@ -1490,8 +1494,15 @@ class VectorDistanceSimulator:
             pad=12, fontsize=11,
         )
 
-        group_col = "color" if self.color_mode_var.get() == "color" else "side"
-        palette = self.color_palette if group_col == "color" else self.side_palette
+        if self.color_mode_var.get() == "color":
+            group_col = "color"
+            palette = self.color_palette
+        elif self.color_mode_var.get() == "side":
+            group_col = "side"
+            palette = self.side_palette
+        else:
+            group_col = "px_py"
+            palette = self.px_py_palette
 
         for gval, gdf in filtered.groupby(group_col, sort=True):
             c = palette.get(str(gval), (0.5, 0.5, 0.5, 1.0))
