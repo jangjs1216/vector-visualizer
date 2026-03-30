@@ -108,16 +108,16 @@ def _extract_filename_from_path(path_value: str) -> str:
 def extract_px_py_from_path(path_value: str) -> tuple[str, str]:
     filename = _extract_filename_from_path(path_value)
     match = re.match(
-        r"^\[([^\[\]]*)\]\[([^\[\]]*)\]\[([^\[\]]*)\]\[([^\[\]]*)\]",
+        r"^\[([^\[\]]*)\]\[([^\[\]]*)\]",
         filename,
     )
     if match:
-        return _normalize_pxpy_value(match.group(3)), _normalize_pxpy_value(match.group(4))
+        return _normalize_pxpy_value(match.group(1)), _normalize_pxpy_value(match.group(2))
 
     tokens = re.findall(r"\[([^\[\]]*)\]", filename)
-    if len(tokens) < 4:
+    if len(tokens) < 2:
         return PXPY_MISSING, PXPY_MISSING
-    return _normalize_pxpy_value(tokens[2]), _normalize_pxpy_value(tokens[3])
+    return _normalize_pxpy_value(tokens[0]), _normalize_pxpy_value(tokens[1])
 
 
 def add_px_py_columns(df: pd.DataFrame) -> pd.DataFrame:
