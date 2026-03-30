@@ -100,8 +100,13 @@ def _normalize_pxpy_value(value: str | None) -> str:
     return text or PXPY_MISSING
 
 
+def _extract_filename_from_path(path_value: str) -> str:
+    normalized = str(path_value).strip().replace("\\", "/")
+    return normalized.rsplit("/", 1)[-1]
+
+
 def extract_px_py_from_path(path_value: str) -> tuple[str, str]:
-    filename = os.path.basename(str(path_value))
+    filename = _extract_filename_from_path(path_value)
     tokens = re.findall(r"\[([^\[\]]*)\]", filename)
     if len(tokens) < 4:
         return PXPY_MISSING, PXPY_MISSING
@@ -116,16 +121,8 @@ def add_px_py_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _parse_selection_input(raw_value: str, valid_values: list[str]) -> list[str] | None:
-    if not raw_value:
-        return None
-    selected = [item.strip() for item in raw_value.split(",") if item.strip()]
-    valid = [item for item in selected if item in valid_values]
-    return valid or None
-
-
-def quick_scan_csv(csv_path: str) -> tuple[int, list[str], list[str], list[str]]:
-    """Quickly scan to get row count and unique filter values."""
+def quick_scan_csv(csv_path: str) -> tuple[int, list[str]]:
+    """Quickly scan to get row count and unique side values."""
     t0 = time.time()
     print("Scanning CSV metadata...", flush=True)
 
@@ -133,67 +130,49 @@ def quick_scan_csv(csv_path: str) -> tuple[int, list[str], list[str], list[str]]
         header_line = f.readline().strip()
     header_fields = header_line.split(",")
     side_idx = header_fields.index("side") if "side" in header_fields else 1
-    path_idx = header_fields.index("path") if "path" in header_fields else 3
 
     sides: set[str] = set()
-    px_values: set[str] = set()
-    py_values: set[str] = set()
     row_count = 0
     with open(csv_path, "r", encoding="utf-8") as f:
         f.readline()
         for line in f:
-            parts = line.rstrip("\n").split(",", max(side_idx, path_idx) + 2)
+            parts = line.split(",", side_idx + 2)
             if len(parts) > side_idx:
                 sv = parts[side_idx].strip()
                 if sv:
                     sides.add(sv)
-            if len(parts) > path_idx:
-                px, py = extract_px_py_from_path(parts[path_idx].strip())
-                px_values.add(px)
-                py_values.add(py)
             row_count += 1
 
     print(f"  Scanned {row_count:,} rows in {time.time() - t0:.1f}s", flush=True)
-    return row_count, sorted(sides), sorted(px_values), sorted(py_values)
+    return row_count, sorted(sides)
 
 
-def ask_user_options(csv_path: str) -> tuple[list[str] | None, list[str] | None, list[str] | None, float]:
+def ask_user_options(csv_path: str) -> tuple[list[str] | None, float]:
     """Interactive prompt at startup."""
-    row_count, sides, px_values, py_values = quick_scan_csv(csv_path)
+    row_count, sides = quick_scan_csv(csv_path)
 
     print(f"\n{'='*55}")
     print(f"  CSV  : {csv_path}")
     print(f"  Rows : {row_count:,}")
     print(f"  Sides: {sides}")
-    print(f"  Px   : {px_values}")
-    print(f"  Py   : {py_values}")
     print(f"{'='*55}\n")
 
     print("[1] Side filter")
     print(f"    Available sides: {', '.join(sides)}")
     print("    Enter side(s) separated by comma, or press Enter for ALL.")
     side_input = input("    > ").strip()
-    side_filter = _parse_selection_input(side_input, sides)
+
+    side_filter: list[str] | None = None
     if side_input:
-        print(f"    → Selected: {side_filter}" if side_filter else "    → No valid sides matched, using ALL.")
+        selected = [s.strip() for s in side_input.split(",") if s.strip()]
+        valid = [s for s in selected if s in sides]
+        if valid:
+            side_filter = valid
+            print(f"    → Selected: {side_filter}")
+        else:
+            print("    → No valid sides matched, using ALL.")
 
-    print(f"\n[2] Px filter")
-    print(f"    Available px values: {', '.join(px_values)}")
-    print("    Enter px value(s) separated by comma, or press Enter for ALL.")
-    px_input = input("    > ").strip()
-    px_filter = _parse_selection_input(px_input, px_values)
-    if px_input:
-        print(f"    → Selected: {px_filter}" if px_filter else "    → No valid px values matched, using ALL.")
-
-    print(f"\n[3] Py filter")
-    print(f"    Available py values: {', '.join(py_values)}")
-    print("    Enter py value(s) separated by comma, or press Enter for ALL.")
-    py_input = input("    > ").strip()
-    py_filter = _parse_selection_input(py_input, py_values)
-    if py_input:
-        print(f"    → Selected: {py_filter}" if py_filter else "    → No valid py values matched, using ALL.")
-
-    print(f"\n[4] Downsampling")
+    print(f"\n[2] Downsampling")
     print("    Enter a ratio (e.g. 0.1 = 10%, 0.5 = 50%), or press Enter for 100%.")
     ratio_input = input("    > ").strip()
 
@@ -208,14 +187,12 @@ def ask_user_options(csv_path: str) -> tuple[list[str] | None, list[str] | None,
             sample_ratio = 1.0
 
     print()
-    return side_filter, px_filter, py_filter, sample_ratio
+    return side_filter, sample_ratio
 
 
 def load_csv(
     csv_path: str,
     side_filter: list[str] | None = None,
-    px_filter: list[str] | None = None,
-    py_filter: list[str] | None = None,
     sample_ratio: float = 1.0,
 ) -> tuple[pd.DataFrame, list[str], int]:
     """Load CSV, validate, filter, downsample. Returns (df, vector_columns, skipped)."""
@@ -264,16 +241,6 @@ def load_csv(
         before = len(df)
         df = df[df["side"].isin(side_filter)].reset_index(drop=True)
         print(f"  Side filter {side_filter}: {before:,} → {len(df):,} rows", flush=True)
-
-    if px_filter:
-        before = len(df)
-        df = df[df["px"].astype(str).isin(px_filter)].reset_index(drop=True)
-        print(f"  Px filter {px_filter}: {before:,} → {len(df):,} rows", flush=True)
-
-    if py_filter:
-        before = len(df)
-        df = df[df["py"].astype(str).isin(py_filter)].reset_index(drop=True)
-        print(f"  Py filter {py_filter}: {before:,} → {len(df):,} rows", flush=True)
 
     # Downsample
     if 0.0 < sample_ratio < 1.0:
@@ -2956,14 +2923,12 @@ def main() -> int:
         print("No CSV file selected.")
         return 1
 
-    side_filter, px_filter, py_filter, sample_ratio = ask_user_options(csv_path)
+    side_filter, sample_ratio = ask_user_options(csv_path)
 
     try:
         df, vector_columns, skipped = load_csv(
             csv_path,
             side_filter=side_filter,
-            px_filter=px_filter,
-            py_filter=py_filter,
             sample_ratio=sample_ratio,
         )
     except Exception as exc:
