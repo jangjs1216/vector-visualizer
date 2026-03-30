@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 import time
 import threading
@@ -48,6 +49,7 @@ except ImportError:
     HAS_UMAP = False
 
 META_COLUMNS = ["type", "side", "color", "path"]
+PXPY_MISSING = "(missing)"
 
 # Strategy parameter definitions
 STRATEGIES = {
@@ -93,8 +95,37 @@ def parse_args() -> argparse.Namespace:
 # CSV scanning & loading
 # ─────────────────────────────────────────────────────────────
 
-def quick_scan_csv(csv_path: str) -> tuple[int, list[str]]:
-    """Quickly scan to get row count and unique side values."""
+def _normalize_pxpy_value(value: str | None) -> str:
+    text = "" if value is None else str(value).strip()
+    return text or PXPY_MISSING
+
+
+def extract_px_py_from_path(path_value: str) -> tuple[str, str]:
+    filename = os.path.basename(str(path_value))
+    tokens = re.findall(r"\[([^\[\]]*)\]", filename)
+    if len(tokens) < 4:
+        return PXPY_MISSING, PXPY_MISSING
+    return _normalize_pxpy_value(tokens[2]), _normalize_pxpy_value(tokens[3])
+
+
+def add_px_py_columns(df: pd.DataFrame) -> pd.DataFrame:
+    px_py = df["path"].astype(str).map(extract_px_py_from_path)
+    df = df.copy()
+    df["px"] = [px for px, _ in px_py]
+    df["py"] = [py for _, py in px_py]
+    return df
+
+
+def _parse_selection_input(raw_value: str, valid_values: list[str]) -> list[str] | None:
+    if not raw_value:
+        return None
+    selected = [item.strip() for item in raw_value.split(",") if item.strip()]
+    valid = [item for item in selected if item in valid_values]
+    return valid or None
+
+
+def quick_scan_csv(csv_path: str) -> tuple[int, list[str], list[str], list[str]]:
+    """Quickly scan to get row count and unique filter values."""
     t0 = time.time()
     print("Scanning CSV metadata...", flush=True)
 
@@ -102,52 +133,68 @@ def quick_scan_csv(csv_path: str) -> tuple[int, list[str]]:
         header_line = f.readline().strip()
     header_fields = header_line.split(",")
     side_idx = header_fields.index("side") if "side" in header_fields else 1
+    path_idx = header_fields.index("path") if "path" in header_fields else 3
 
     sides: set[str] = set()
+    px_values: set[str] = set()
+    py_values: set[str] = set()
     row_count = 0
     with open(csv_path, "r", encoding="utf-8") as f:
         f.readline()
         for line in f:
-            parts = line.split(",", side_idx + 2)
+            parts = line.rstrip("\n").split(",", max(side_idx, path_idx) + 2)
             if len(parts) > side_idx:
                 sv = parts[side_idx].strip()
                 if sv:
                     sides.add(sv)
+            if len(parts) > path_idx:
+                px, py = extract_px_py_from_path(parts[path_idx].strip())
+                px_values.add(px)
+                py_values.add(py)
             row_count += 1
 
     print(f"  Scanned {row_count:,} rows in {time.time() - t0:.1f}s", flush=True)
-    return row_count, sorted(sides)
+    return row_count, sorted(sides), sorted(px_values), sorted(py_values)
 
 
-def ask_user_options(csv_path: str) -> tuple[list[str] | None, float]:
+def ask_user_options(csv_path: str) -> tuple[list[str] | None, list[str] | None, list[str] | None, float]:
     """Interactive prompt at startup."""
-    row_count, sides = quick_scan_csv(csv_path)
+    row_count, sides, px_values, py_values = quick_scan_csv(csv_path)
 
     print(f"\n{'='*55}")
     print(f"  CSV  : {csv_path}")
     print(f"  Rows : {row_count:,}")
     print(f"  Sides: {sides}")
+    print(f"  Px   : {px_values}")
+    print(f"  Py   : {py_values}")
     print(f"{'='*55}\n")
 
-    # Side filter
     print("[1] Side filter")
     print(f"    Available sides: {', '.join(sides)}")
-    print(f"    Enter side(s) separated by comma, or press Enter for ALL.")
+    print("    Enter side(s) separated by comma, or press Enter for ALL.")
     side_input = input("    > ").strip()
-
-    side_filter: list[str] | None = None
+    side_filter = _parse_selection_input(side_input, sides)
     if side_input:
-        selected = [s.strip() for s in side_input.split(",") if s.strip()]
-        valid = [s for s in selected if s in sides]
-        if valid:
-            side_filter = valid
-            print(f"    → Selected: {side_filter}")
-        else:
-            print(f"    → No valid sides matched, using ALL.")
+        print(f"    → Selected: {side_filter}" if side_filter else "    → No valid sides matched, using ALL.")
 
-    # Downsample
-    print(f"\n[2] Downsampling")
-    print(f"    Enter a ratio (e.g. 0.1 = 10%, 0.5 = 50%), or press Enter for 100%.")
+    print(f"\n[2] Px filter")
+    print(f"    Available px values: {', '.join(px_values)}")
+    print("    Enter px value(s) separated by comma, or press Enter for ALL.")
+    px_input = input("    > ").strip()
+    px_filter = _parse_selection_input(px_input, px_values)
+    if px_input:
+        print(f"    → Selected: {px_filter}" if px_filter else "    → No valid px values matched, using ALL.")
+
+    print(f"\n[3] Py filter")
+    print(f"    Available py values: {', '.join(py_values)}")
+    print("    Enter py value(s) separated by comma, or press Enter for ALL.")
+    py_input = input("    > ").strip()
+    py_filter = _parse_selection_input(py_input, py_values)
+    if py_input:
+        print(f"    → Selected: {py_filter}" if py_filter else "    → No valid py values matched, using ALL.")
+
+    print(f"\n[4] Downsampling")
+    print("    Enter a ratio (e.g. 0.1 = 10%, 0.5 = 50%), or press Enter for 100%.")
     ratio_input = input("    > ").strip()
 
     sample_ratio = 1.0
@@ -157,16 +204,18 @@ def ask_user_options(csv_path: str) -> tuple[list[str] | None, float]:
             sample_ratio = max(0.01, min(1.0, sample_ratio))
             print(f"    → Ratio: {sample_ratio:.0%} (~{int(row_count * sample_ratio):,} rows)")
         except ValueError:
-            print(f"    → Invalid input, using 100%.")
+            print("    → Invalid input, using 100%.")
             sample_ratio = 1.0
 
     print()
-    return side_filter, sample_ratio
+    return side_filter, px_filter, py_filter, sample_ratio
 
 
 def load_csv(
     csv_path: str,
     side_filter: list[str] | None = None,
+    px_filter: list[str] | None = None,
+    py_filter: list[str] | None = None,
     sample_ratio: float = 1.0,
 ) -> tuple[pd.DataFrame, list[str], int]:
     """Load CSV, validate, filter, downsample. Returns (df, vector_columns, skipped)."""
@@ -208,11 +257,23 @@ def load_csv(
     t2 = time.time()
     print(f"  Validation: {t2 - t1:.1f}s (valid: {len(df):,}, skipped: {skipped:,})", flush=True)
 
+    df = add_px_py_columns(df)
+
     # Side filter
     if side_filter:
         before = len(df)
         df = df[df["side"].isin(side_filter)].reset_index(drop=True)
         print(f"  Side filter {side_filter}: {before:,} → {len(df):,} rows", flush=True)
+
+    if px_filter:
+        before = len(df)
+        df = df[df["px"].astype(str).isin(px_filter)].reset_index(drop=True)
+        print(f"  Px filter {px_filter}: {before:,} → {len(df):,} rows", flush=True)
+
+    if py_filter:
+        before = len(df)
+        df = df[df["py"].astype(str).isin(py_filter)].reset_index(drop=True)
+        print(f"  Py filter {py_filter}: {before:,} → {len(df):,} rows", flush=True)
 
     # Downsample
     if 0.0 < sample_ratio < 1.0:
@@ -555,12 +616,20 @@ class VectorDistanceSimulator:
 
         self.side_values = sorted(self.df["side"].dropna().astype(str).unique().tolist())
         self.color_values = sorted(self.df["color"].dropna().astype(str).unique().tolist())
+        self.px_values = sorted(self.df["px"].dropna().astype(str).unique().tolist())
+        self.py_values = sorted(self.df["py"].dropna().astype(str).unique().tolist())
 
         self.side_vars: dict[str, tk.BooleanVar] = {
             v: tk.BooleanVar(value=True) for v in self.side_values
         }
         self.color_vars: dict[str, tk.BooleanVar] = {
             v: tk.BooleanVar(value=True) for v in self.color_values
+        }
+        self.px_vars: dict[str, tk.BooleanVar] = {
+            v: tk.BooleanVar(value=True) for v in self.px_values
+        }
+        self.py_vars: dict[str, tk.BooleanVar] = {
+            v: tk.BooleanVar(value=True) for v in self.py_values
         }
 
         self.dimension_var = tk.StringVar(value="3D")
@@ -697,7 +766,8 @@ class VectorDistanceSimulator:
                   wraplength=300, justify="left").pack(anchor="w", pady=(0, 6))
         summary = (
             f"Total rows: {self.total_loaded:,}  |  Skipped: {self.skipped:,}\n"
-            f"Sides: {len(self.side_values)}, Colors: {len(self.color_values)}"
+            f"Sides: {len(self.side_values)}, Colors: {len(self.color_values)}\n"
+            f"Px: {len(self.px_values)}, Py: {len(self.py_values)}"
         )
         ttk.Label(control_frame, text=summary, justify="left").pack(anchor="w", pady=(0, 12))
 
@@ -764,6 +834,16 @@ class VectorDistanceSimulator:
         ttk.Button(btn_row2, text="All colors", command=self._select_all_colors).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
         ttk.Button(btn_row2, text="Clear colors", command=self._clear_all_colors).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
 
+        btn_row3 = ttk.Frame(btn_box)
+        btn_row3.pack(fill=tk.X, pady=(2, 0))
+        ttk.Button(btn_row3, text="All px", command=self._select_all_px).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+        ttk.Button(btn_row3, text="Clear px", command=self._clear_all_px).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+
+        btn_row4 = ttk.Frame(btn_box)
+        btn_row4.pack(fill=tk.X, pady=(2, 0))
+        ttk.Button(btn_row4, text="All py", command=self._select_all_py).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+        ttk.Button(btn_row4, text="Clear py", command=self._clear_all_py).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+
         # ── Side Filter ──
         side_box = ttk.LabelFrame(np_, text="Side Filter", padding=8)
         side_box.pack(fill=tk.X, pady=(0, 8))
@@ -775,6 +855,16 @@ class VectorDistanceSimulator:
         color_box.pack(fill=tk.X, pady=(0, 8))
         for v in self.color_values:
             ttk.Checkbutton(color_box, text=v, variable=self.color_vars[v]).pack(anchor="w")
+
+        px_box = ttk.LabelFrame(np_, text="Px Filter", padding=8)
+        px_box.pack(fill=tk.X, pady=(0, 8))
+        for v in self.px_values:
+            ttk.Checkbutton(px_box, text=v, variable=self.px_vars[v]).pack(anchor="w")
+
+        py_box = ttk.LabelFrame(np_, text="Py Filter", padding=8)
+        py_box.pack(fill=tk.X, pady=(0, 8))
+        for v in self.py_values:
+            ttk.Checkbutton(py_box, text=v, variable=self.py_vars[v]).pack(anchor="w")
 
         # ── Simulation Controls ──
         sim_box = ttk.LabelFrame(np_, text="🎯 Simulation Controls", padding=8)
@@ -877,6 +967,10 @@ class VectorDistanceSimulator:
             v.trace_add("write", _on_filter_change)
         for v in self.color_vars.values():
             v.trace_add("write", _on_filter_change)
+        for v in self.px_vars.values():
+            v.trace_add("write", _on_filter_change)
+        for v in self.py_vars.values():
+            v.trace_add("write", _on_filter_change)
         self.path_filter_var.trace_add("write", _on_filter_change)
         self.color_mode_var.trace_add("write", _on_filter_change)
         self.dimension_var.trace_add("write", _on_filter_change)
@@ -893,13 +987,29 @@ class VectorDistanceSimulator:
     def _clear_all_colors(self):
         for v in self.color_vars.values(): v.set(False)
 
+    def _select_all_px(self):
+        for v in self.px_vars.values(): v.set(True)
+
+    def _clear_all_px(self):
+        for v in self.px_vars.values(): v.set(False)
+
+    def _select_all_py(self):
+        for v in self.py_vars.values(): v.set(True)
+
+    def _clear_all_py(self):
+        for v in self.py_vars.values(): v.set(False)
+
     def _get_filtered_indices(self) -> np.ndarray:
         """Return boolean mask for self.df based on current filters."""
         sel_sides = {k for k, v in self.side_vars.items() if v.get()}
         sel_colors = {k for k, v in self.color_vars.items() if v.get()}
+        sel_px = {k for k, v in self.px_vars.items() if v.get()}
+        sel_py = {k for k, v in self.py_vars.items() if v.get()}
         mask = (
             self.df["side"].astype(str).isin(sel_sides)
             & self.df["color"].astype(str).isin(sel_colors)
+            & self.df["px"].astype(str).isin(sel_px)
+            & self.df["py"].astype(str).isin(sel_py)
         )
         pt = self.path_filter_var.get().strip().lower()
         if pt:
@@ -1095,6 +1205,8 @@ class VectorDistanceSimulator:
             f"type : {row['type']}\n"
             f"side : {row['side']}\n"
             f"color: {row['color']}\n"
+            f"px   : {row['px']}\n"
+            f"py   : {row['py']}\n"
             f"path : {path_str}"
         )
         self._tooltip_label.config(text=text)
@@ -1216,7 +1328,9 @@ class VectorDistanceSimulator:
             f"path  : {path}\n"
             f"type  : {row['type']}\n"
             f"side  : {row['side']}\n"
-            f"color : {row['color']}"
+            f"color : {row['color']}\n"
+            f"px    : {row['px']}\n"
+            f"py    : {row['py']}"
         )
 
         # Reuse existing window or create new one
@@ -2842,12 +2956,14 @@ def main() -> int:
         print("No CSV file selected.")
         return 1
 
-    side_filter, sample_ratio = ask_user_options(csv_path)
+    side_filter, px_filter, py_filter, sample_ratio = ask_user_options(csv_path)
 
     try:
         df, vector_columns, skipped = load_csv(
             csv_path,
             side_filter=side_filter,
+            px_filter=px_filter,
+            py_filter=py_filter,
             sample_ratio=sample_ratio,
         )
     except Exception as exc:
