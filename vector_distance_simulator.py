@@ -708,6 +708,7 @@ class VectorDistanceSimulator:
         self._help_tooltip_label = None
 
         self._show_right_bg_var = tk.BooleanVar(value=True)
+        self._suspend_filter_callbacks = False
 
         self._build_ui()
         self._bind_filter_events()
@@ -962,6 +963,8 @@ class VectorDistanceSimulator:
     def _bind_filter_events(self):
         """When filters change and UMAP is active, auto-update both views."""
         def _on_filter_change(*_):
+            if self._suspend_filter_callbacks:
+                return
             if self.method_var.get() == "UMAP" and self._umap_cache:
                 self._draw_from_umap_cache()
                 self._redraw_right_view()
@@ -976,23 +979,35 @@ class VectorDistanceSimulator:
         self.color_mode_var.trace_add("write", _on_filter_change)
         self.dimension_var.trace_add("write", _on_filter_change)
 
+    def _apply_bulk_var_update(self, vars_dict: dict[str, tk.BooleanVar], value: bool) -> None:
+        self._suspend_filter_callbacks = True
+        try:
+            for var in vars_dict.values():
+                var.set(value)
+        finally:
+            self._suspend_filter_callbacks = False
+
+        if self.method_var.get() == "UMAP" and self._umap_cache:
+            self._draw_from_umap_cache()
+            self._redraw_right_view()
+
     def _select_all_sides(self):
-        for v in self.side_vars.values(): v.set(True)
+        self._apply_bulk_var_update(self.side_vars, True)
 
     def _clear_all_sides(self):
-        for v in self.side_vars.values(): v.set(False)
+        self._apply_bulk_var_update(self.side_vars, False)
 
     def _select_all_colors(self):
-        for v in self.color_vars.values(): v.set(True)
+        self._apply_bulk_var_update(self.color_vars, True)
 
     def _clear_all_colors(self):
-        for v in self.color_vars.values(): v.set(False)
+        self._apply_bulk_var_update(self.color_vars, False)
 
     def _select_all_px_py_pairs(self):
-        for v in self.px_py_vars.values(): v.set(True)
+        self._apply_bulk_var_update(self.px_py_vars, True)
 
     def _clear_all_px_py_pairs(self):
-        for v in self.px_py_vars.values(): v.set(False)
+        self._apply_bulk_var_update(self.px_py_vars, False)
 
     def _get_filtered_indices(self) -> np.ndarray:
         """Return boolean mask for self.df based on current filters."""
