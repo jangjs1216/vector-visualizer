@@ -132,12 +132,12 @@ def _log_px_py_examples(df: pd.DataFrame, limit: int = 5) -> None:
     if df.empty:
         return
 
-    print("  Px/Py parse samples:", flush=True)
+    print("  Px/Py parse samples (px=1st bracket, py=2nd bracket):", flush=True)
     sample = df[["path", "px", "py"]].head(limit)
     for _, row in sample.iterrows():
         filename = _extract_filename_from_path(row["path"])
         print(
-            f"    {filename} -> px={row['px']}, py={row['py']}",
+            f"    {filename} -> px(first)={row['px']}, py(second)={row['py']}",
             flush=True,
         )
 
@@ -756,7 +756,7 @@ class VectorDistanceSimulator:
         summary = (
             f"Total rows: {self.total_loaded:,}  |  Skipped: {self.skipped:,}\n"
             f"Sides: {len(self.side_values)}, Colors: {len(self.color_values)}\n"
-            f"Px: {len(self.px_values)}, Py: {len(self.py_values)}"
+            f"Px (1st bracket): {len(self.px_values)}, Py (2nd bracket): {len(self.py_values)}"
         )
         ttk.Label(control_frame, text=summary, justify="left").pack(anchor="w", pady=(0, 12))
 
@@ -825,13 +825,13 @@ class VectorDistanceSimulator:
 
         btn_row3 = ttk.Frame(btn_box)
         btn_row3.pack(fill=tk.X, pady=(2, 0))
-        ttk.Button(btn_row3, text="All px", command=self._select_all_px).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
-        ttk.Button(btn_row3, text="Clear px", command=self._clear_all_px).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+        ttk.Button(btn_row3, text="All px(1st)", command=self._select_all_px).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+        ttk.Button(btn_row3, text="Clear px(1st)", command=self._clear_all_px).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
 
         btn_row4 = ttk.Frame(btn_box)
         btn_row4.pack(fill=tk.X, pady=(2, 0))
-        ttk.Button(btn_row4, text="All py", command=self._select_all_py).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
-        ttk.Button(btn_row4, text="Clear py", command=self._clear_all_py).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+        ttk.Button(btn_row4, text="All py(2nd)", command=self._select_all_py).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+        ttk.Button(btn_row4, text="Clear py(2nd)", command=self._clear_all_py).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
 
         # ── Side Filter ──
         side_box = ttk.LabelFrame(np_, text="Side Filter", padding=8)
@@ -845,12 +845,12 @@ class VectorDistanceSimulator:
         for v in self.color_values:
             ttk.Checkbutton(color_box, text=v, variable=self.color_vars[v]).pack(anchor="w")
 
-        px_box = ttk.LabelFrame(np_, text="Px Filter", padding=8)
+        px_box = ttk.LabelFrame(np_, text="Px Filter (1st bracket)", padding=8)
         px_box.pack(fill=tk.X, pady=(0, 8))
         for v in self.px_values:
             ttk.Checkbutton(px_box, text=v, variable=self.px_vars[v]).pack(anchor="w")
 
-        py_box = ttk.LabelFrame(np_, text="Py Filter", padding=8)
+        py_box = ttk.LabelFrame(np_, text="Py Filter (2nd bracket)", padding=8)
         py_box.pack(fill=tk.X, pady=(0, 8))
         for v in self.py_values:
             ttk.Checkbutton(py_box, text=v, variable=self.py_vars[v]).pack(anchor="w")
